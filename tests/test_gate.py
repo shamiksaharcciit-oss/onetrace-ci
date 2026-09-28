@@ -103,6 +103,8 @@ def test_an_instrument_annotation_on_a_same_stage_is_review(make_run, write_plan
     assert exit_code == 2
     assert annotation_findings[0].verdict == REVIEW
     assert "retrieve" in annotation_findings[0].check
+    #: A sentence a reviewer can read, not the diff report's own dict printed as-is.
+    assert annotation_findings[0].detail == "instrument.version 1.0.0 -> 1.0.1"
 
 
 def test_a_refused_answer_fails_verify(make_run, write_plan, tmp_path, examined):

@@ -106,6 +106,20 @@ def _verify_finding(run: Path) -> Finding:
                   detail=result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "")
 
 
+def _differs_sentence(differs: dict) -> str:
+    """The diff report's `differs` ({field: [old, new]}) as words: "field old -> new", one
+    clause per field in key order. "->" rather than an arrow character, so the line prints
+    on any console encoding."""
+    parts = []
+    for field in sorted(differs):
+        value = differs[field]
+        if isinstance(value, (list, tuple)) and len(value) == 2:
+            parts.append(f"{field} {value[0]} -> {value[1]}")
+        else:
+            parts.append(f"{field} {value}")
+    return "; ".join(parts)
+
+
 def _diff_findings(baseline: Path, run: Path, out: Path, plan: Plan) -> list[Finding]:
     diff_out = out / "diff"
     argv = [_console_script("onetrace"), "diff", str(baseline), str(run), "--out", str(diff_out), "--quiet"]
@@ -122,7 +136,7 @@ def _diff_findings(baseline: Path, run: Path, out: Path, plan: Plan) -> list[Fin
             findings.append(Finding(
                 check=f"diff: instrument/config annotation at stage {stage!r}",
                 command=command, exit_code=result.returncode, report_path=str(report_path),
-                verdict=REVIEW, detail=str(annotations[stage]["differs"])))
+                verdict=REVIEW, detail=_differs_sentence(annotations[stage]["differs"])))
 
     if result.returncode == 0:
         findings.append(Finding(check="diff", command=command, exit_code=0,
