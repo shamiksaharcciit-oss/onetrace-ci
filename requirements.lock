@@ -1,0 +1,7 @@
+# Pinned by hash: nothing outside the standard library besides onetrace
+# itself (which pulls in onetrace-verify).
+# Install with: pip install --require-hashes -r requirements.lock
+onetrace==0.1.1 \
+    --hash=sha256:eccc509e80ac782dd89aa8e2f84d34aa21bc582cc84e306d362340b361e3d6cf
+onetrace-verify==0.1.1 \
+    --hash=sha256:cf259b4f281f2977836dbfbf0a312574f35d6e8eec9a93de997c96094fa1f624

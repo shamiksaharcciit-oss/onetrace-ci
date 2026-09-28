@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onetrace-ci"
+version = "0.1.0"
+description = "CI gate for onetrace records, phase 1: turns onetrace's existing commands into one CI verdict. No observer, no inference, no codemod -- onetrace itself is never modified."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Shamik Saha" }]
+
+# Pinned by hash in requirements.lock; nothing else outside the standard
+# library. onetrace pulls in onetrace-verify itself.
+dependencies = [
+    "onetrace",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+onetrace-ci = "onetrace_ci.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--basetemp=.pytest-basetemp"
