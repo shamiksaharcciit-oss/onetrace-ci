@@ -142,4 +142,4 @@ Marketplace publication in this phase.
 
 ## License
 
-Apache-2.0. See `LICENSE`.
+Copyright 2026 Shamik Saha. Licensed under Apache-2.0; see LICENSE.

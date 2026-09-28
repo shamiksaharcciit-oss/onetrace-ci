@@ -130,10 +130,11 @@ def _diff_findings(baseline: Path, run: Path, out: Path, plan: Plan) -> list[Fin
                                 detail="identical"))
     elif result.returncode == 1:
         report = _read_json(report_path)
-        first = report.get("first_difference")
+        first = report.get("first_difference") or {}
+        first_stage = first.get("stage") if isinstance(first, dict) else first
         findings.append(Finding(check="diff", command=command, exit_code=1,
                                 report_path=str(report_path), verdict=REVIEW,
-                                detail=f"first difference at stage {first!r}"))
+                                detail=f"first difference at stage {first_stage!r}"))
         localize_out = out / "localize"
         localize_argv = [_console_script("onetrace"), "localize", str(baseline), str(run),
                          "--out", str(localize_out), "--quiet"]

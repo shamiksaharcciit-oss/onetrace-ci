@@ -31,7 +31,12 @@ def test_a_changed_stage_is_review_with_localize_attached(make_run, write_plan, 
     examined(len(findings), "findings for a changed stage")
     assert exit_code == 2
     assert checks["diff"].verdict == REVIEW
-    assert "retrieve" in checks["diff"].detail
+    #: `first_difference` in the real report is itself an object
+    #: ({"index": ..., "stage": ...}), not a bare stage name -- this checks
+    #: the extracted, clean stage name, not merely that the substring
+    #: "retrieve" appears somewhere in a dict repr (which it would even if
+    #: the code stringified the whole object by mistake).
+    assert checks["diff"].detail == "first difference at stage 'retrieve'"
     assert checks["localize"].verdict == REVIEW
     assert (tmp_path / "out" / "localize" / "localize.json").is_file()
 
