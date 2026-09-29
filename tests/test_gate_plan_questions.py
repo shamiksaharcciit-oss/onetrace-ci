@@ -91,3 +91,30 @@ def test_without_require_declared_the_count_is_an_annotation(make_run, write_pla
     examined(1, "the declared annotation")
     assert declared.verdict == PASS
     assert declared.detail.startswith("1 undeclared field")
+
+
+INSTRUMENT_PLAN = ("approved_by: a\nentry: pipeline.main:run\nrun_dir: runs/{run_id}\nstages:\n"
+                   "  - name: retrieve\n    function: pipeline.retrieval:retrieve\n")
+
+
+def test_require_declared_defaults_to_true_in_a_plan_instrument_reads(examined):
+    """instrument requires every meaning field, so its plans can't produce `undeclared`; the
+    default `true` catches a hand edit later. A plan without stages (the no-plan path) keeps
+    `false`."""
+    examined(2, "an instrument plan and a minimal plan, neither stating require_declared")
+    assert parse_plan_text(INSTRUMENT_PLAN, source="<t>").require_declared is True
+    assert parse_plan_text("approved_by: a\n", source="<t>").require_declared is False
+
+
+def test_an_instrument_plan_that_says_nothing_fails_a_run_with_an_undeclared_field(
+        make_run, write_plan, tmp_path, examined):
+    baseline = make_run("baseline")
+    run = make_run("candidate")
+    _mark_undeclared(run, "01-retrieve.json")
+    plan = write_plan("plan.yaml", INSTRUMENT_PLAN)
+    exit_code, findings = run_gate(run=run, baseline=baseline, plan_path=plan, runner=None,
+                                   out=tmp_path / "out", review_exit_zero=False)
+    [declared] = [f for f in findings if f.check == "declared"]
+    examined(1, "the declared finding under an instrument plan")
+    assert exit_code == 1 and declared.verdict == FAIL
+    assert "'retrieve'" in declared.detail

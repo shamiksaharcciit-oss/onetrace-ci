@@ -143,6 +143,13 @@ is ignored for gating purposes, but named in the summary. A missing or empty
 `approved_by` is a **fail**: a gate against an unapproved plan proves
 nothing.
 
+`require_declared` decides what the gate does with a field nobody declared
+(`undeclared`): `true` fails the run, naming the stages; `false` reports
+their count. It defaults to `true` in a plan with `stages` (one that
+`onetrace-ci instrument` reads, which can't produce `undeclared`, so `true`
+only catches a later hand edit), and to `false` in a plan without them (the
+plan `onetrace-ci init-ci` writes for code decorated by hand says `false`).
+
 ## `onetrace-ci baseline propose`
 
 <!-- not executed -->

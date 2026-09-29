@@ -107,7 +107,10 @@ def parse_plan_text(text: str, *, source: str) -> Plan:
 
     require_declared = values.get("require_declared")
     if require_declared is None:
-        require_declared = False
+        #: `true` in a plan `instrument` reads (it has stages): instrument requires every meaning
+        #: field, so such a plan can't produce `undeclared`, and `true` catches a hand edit later.
+        #: `false` without stages, the no-plan path of code decorated by hand.
+        require_declared = "stages" in values
     if not isinstance(require_declared, bool) and not (
             isinstance(require_declared, str) and require_declared.lstrip().startswith("DECIDE:")):
         raise PlanError(f"{source}: 'require_declared' must be true or false, got {require_declared!r}")
