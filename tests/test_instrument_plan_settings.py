@@ -53,7 +53,8 @@ REFUSALS = {
     "an unknown corpus field": (PLAN + CORPUS + "  index: split\n", "corpus.index", "index_stage"),
     "an index_stage that names a function, not a stage": (
         PLAN + CORPUS + "  index_stage: pipeline.ingest:write_index\n", "corpus.index_stage", "stage"),
-    "several entries": (PLAN + "entries: [pipeline.main:run, pipeline.ingest:run]\n", "entries", ""),
+    "entries that are not mappings": (PLAN + "entries: [pipeline.main:run, pipeline.ingest:run]\n", "entries[0]",
+                                      "must be a mapping"),
 }
 
 

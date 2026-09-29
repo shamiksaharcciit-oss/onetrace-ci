@@ -1228,7 +1228,9 @@ def build_patch(*, plan_path: Path, repo: Path) -> Result:
         raise Refused(f"{plan_path}: the plan is outside --repo {repo}; the workflow reads it from the "
                       f"repository, so it must be committed there") from None
 
-    problems = []
+    problems = _decorator_only(plan)
+    if problems:
+        raise Refused(problems)
     for stage in plan.stages:
         for f in stage.files:
             if not (repo / f).is_file():
@@ -1313,6 +1315,21 @@ def build_patch(*, plan_path: Path, repo: Path) -> Result:
         header.append("stages that record no settings (no config or constants in the plan): "
                       + ", ".join(repr(n) for n in bare))
     return Result("".join(diffs), files, header + summary)
+
+
+def _decorator_only(plan: InstrumentPlan) -> list[str]:
+    """What the wrapper style does not generate: several entries, a stage that repeats, and a
+    stage's named instances. Decorator output (onetrace 0.2.0) generates them."""
+    found = []
+    if len(plan.entries) > 1:
+        found.append("plan field entries: several entries (one run type each) are generated in "
+                     "decorator style only")
+    for stage in plan.stages:
+        for key in ("repeats", "instances"):
+            if getattr(stage, key):
+                found.append(f"plan field stages[{stage.index}].{key}: a stage's {key} are generated in "
+                             f"decorator style only")
+    return found
 
 
 def _describe(a: _Analysis, entry_rel: str) -> list[str]:

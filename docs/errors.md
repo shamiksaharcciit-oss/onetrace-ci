@@ -21,9 +21,15 @@ A field still holds a `DECIDE:` question, as `onetrace-ci discover` or `init-ci`
 
 **Fix:** Put the name of the environment variable that holds the key in `sign.key_env`, and the key itself in your CI secret store.
 
+## decorator-style
+
+The plan asks for several entries, a stage that repeats, or a stage's named instances, which only decorator output (onetrace 0.2.0's `@ot.run` and `@ot.stage`) generates; the wrapper style does not.
+
+**Fix:** Generate this plan as decorators (onetrace 0.2.0's `@ot.run` and `@ot.stage`), which carry several entries, repeats and instances; the wrapper style does not.
+
 ## needs-sdk
 
-The plan asks for code (signing, anchoring, settings, a corpus link, several entries) that this version of onetrace-ci does not generate yet.
+The plan asks for code (signing, anchoring, settings, a corpus link) that this version of onetrace-ci does not generate yet.
 
 **Fix:** Leave this out of the plan for now (or set it to `none`); it is generated once onetrace-ci is checked against the SDK version that provides it.
 

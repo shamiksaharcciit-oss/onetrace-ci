@@ -22,6 +22,9 @@ CODES: list[tuple[str, str, str]] = [
     ("key-material", r"never the key itself",
      "Put the name of the environment variable that holds the key in `sign.key_env`, and the "
      "key itself in your CI secret store."),
+    ("decorator-style", r"generated in decorator style only",
+     "Generate this plan as decorators (onetrace 0.2.0's `@ot.run` and `@ot.stage`), which carry "
+     "several entries, repeats and instances; the wrapper style does not."),
     ("needs-sdk", r"onetrace 0\.2\.0",
      "Leave this out of the plan for now (or set it to `none`); it is generated once onetrace-ci "
      "is checked against the SDK version that provides it."),
@@ -43,7 +46,9 @@ CODES: list[tuple[str, str, str]] = [
                       r"is not a stage declared before|is not a planned stage|only a stage without a function|"
                       r"cannot be recorded: the SDK refuses|the only placeholder|several entries|"
                       r"give the same generated name|a stage without a function has no parameters|"
-                      r"names a function; name the ingest stage",
+                      r"names a function; name the ingest stage|a plan with entries has no top-level|"
+                      r"is also entries\[|not an entries field|is a stage of this entry|"
+                      r"is not a stage of another entry|is named twice; each instance",
      "Correct the named field: the message says which values it accepts."),
     ("class-method", r"names a class method",
      "Make the stage a module-level function (a method can call it), and name that function."),

@@ -28,7 +28,8 @@ from onetrace_ci.yamlsubset import SubsetError, parse
 _GATE_KEYS = frozenset({"format", "approved_boundaries", "known_limits",
                         "reproduce", "approved_by"})
 #: Read by `onetrace-ci instrument` (see `instrument_plan.py`), not by the gate.
-INSTRUMENT_KEYS = frozenset({"entry", "run_dir", "stages", "ci", "sign", "anchor", "trust"})
+INSTRUMENT_KEYS = frozenset({"entry", "run_dir", "stages", "ci", "sign", "anchor", "trust",
+                             "corpus", "entries"})
 _KNOWN_KEYS = _GATE_KEYS | INSTRUMENT_KEYS | {"require_declared"}
 
 
@@ -110,7 +111,7 @@ def parse_plan_text(text: str, *, source: str) -> Plan:
         #: `true` in a plan `instrument` reads (it has stages): instrument requires every meaning
         #: field, so such a plan can't produce `undeclared`, and `true` catches a hand edit later.
         #: `false` without stages, the no-plan path of code decorated by hand.
-        require_declared = "stages" in values
+        require_declared = "stages" in values or "entries" in values
     if not isinstance(require_declared, bool) and not (
             isinstance(require_declared, str) and require_declared.lstrip().startswith("DECIDE:")):
         raise PlanError(f"{source}: 'require_declared' must be true or false, got {require_declared!r}")

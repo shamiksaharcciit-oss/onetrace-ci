@@ -50,7 +50,9 @@ TRUST_CLASSES = ("operator-authored", "model-generated", "externally-sourced")
 _IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 _MODULE_RE = re.compile(rf"{_IDENT}(?:\.{_IDENT})*")
 _STAGE_KEYS = frozenset({"name", "function", "memory_inputs", "trust", "rederivable",
-                         "rederivable_note", "instrument", "inputs", "files", "config", "constants"})
+                         "rederivable_note", "instrument", "inputs", "files", "config", "constants",
+                         "repeats", "instances"})
+_ENTRY_KEYS = ("entry", "run_dir", "stages", "corpus")
 _DOTTED_RE = re.compile(rf"{_IDENT}(?:\.{_IDENT})*")
 _FUNCTION_RE = re.compile(rf"{_IDENT}(?:\.{_IDENT})*:{_IDENT}(?:\.{_IDENT})*")
 _INSTRUMENT_KEYS = frozenset({"name", "package", "kind"})
@@ -98,6 +100,11 @@ class Stage:
     config: dict | None = None
     #: Names of parameters (or dotted attributes of one) to record as constants at run time.
     constants: tuple[str, ...] = ()
+    #: A stage called more than once in a run, one call after another (a loop): each call is
+    #: numbered by the SDK (D1a).
+    repeats: bool = False
+    #: Named instances of a stage whose calls may overlap: one per call site (D1a).
+    instances: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +114,15 @@ class CorpusSpec:
     #: The ingest stage whose output is the chunk index (the SDK's `corpus_from(..., index_stage=)`).
     #: No default: None when the plan names none.
     index_stage: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EntrySpec:
+    """One run type: its entry function, where its runs go, its stages and its corpus link."""
+    entry: FunctionRef
+    run_dir: str
+    stages: tuple[Stage, ...]
+    corpus: CorpusSpec | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +165,9 @@ class InstrumentPlan:
     anchor: AnchorSpec | str | None = None
     trust: TrustSpec | None = None
     corpus: CorpusSpec | None = None
+    #: Every entry, in the plan's order: one for a plan without `entries:`. `entry`, `run_dir`,
+    #: `stages` and `corpus` above are the first entry's.
+    entries: tuple[EntrySpec, ...] = ()
 
 
 class _Problems:
@@ -225,8 +244,8 @@ def _relative_path(text: str, path: str, problems: _Problems) -> bool:
     return True
 
 
-def _stage(raw, i: int, names_so_far: list[str], problems: _Problems) -> Stage | None:
-    at = f"stages[{i}]"
+def _stage(raw, i: int, names_so_far: list[str], problems: _Problems, prefix: str = "") -> Stage | None:
+    at = f"{prefix}stages[{i}]"
     if not isinstance(raw, dict):
         problems.add(at, f"must be a mapping, got {raw!r}")
         return None
@@ -326,10 +345,20 @@ def _stage(raw, i: int, names_so_far: list[str], problems: _Problems) -> Stage |
         if not _DOTTED_RE.fullmatch(c):
             problems.add(f"{at}.constants", f"{c!r} is not a parameter name or a dotted attribute of one")
 
+    repeats = False
+    rr = raw.get("repeats")
+    if rr is True or rr == "true":
+        repeats = True
+    elif rr is not None and rr is not False and rr != "false":
+        problems.add(f"{at}.repeats", f"must be true or false, got {rr!r}")
+    instances = _names(raw, "instances", f"{at}.instances", problems)
+    for dup in sorted({x for x in instances if instances.count(x) > 1}):
+        problems.add(f"{at}.instances", f"{dup!r} is named twice; each instance names one call")
+
     if name is None:
         return None
     return Stage(i, name, function, memory_inputs, trust, rederivable or "", note, instrument,
-                 inputs, files, config=config, constants=constants)
+                 inputs, files, config=config, constants=constants, repeats=repeats, instances=instances)
 
 
 _BLOCKS = {
@@ -404,18 +433,31 @@ def parse_instrument_plan(text: str, *, source: str) -> InstrumentPlan:
         problems.add("approved_by", f"{approved_by!r} names nobody; a person writes who approves")
         approved_by = None
 
-    entry = None
-    entry_text = _text(values, "entry", "entry", problems, required=True)
-    if entry_text is not None:
-        entry = _function_ref(entry_text, "entry", problems)
-
-    run_dir = _text(values, "run_dir", "run_dir", problems, required=True)
-    if run_dir is not None and _relative_path(run_dir.replace("{run_id}", "x"), "run_dir", problems):
-        if set(re.findall(r"\{([^}]*)\}", run_dir)) - {"run_id"} or "{" in run_dir.replace("{run_id}", ""):
-            problems.add("run_dir", f"{run_dir!r}: the only placeholder is {{run_id}}")
-        elif "{run_id}" not in run_dir:
-            problems.add("run_dir", f"{run_dir!r} has no {{run_id}}; each run is written to a folder of "
-                                    f"its own, and a second run into the same folder is refused")
+    entries: list[tuple[int, EntrySpec]] = []
+    if "entries" in values:
+        #: Each entry is one run type; a plan names them there, or one at the top level.
+        for key in _ENTRY_KEYS:
+            if key in values:
+                problems.add(key, f"a plan with entries has no top-level {key}; it belongs inside each of entries")
+        raw_entries = values.get("entries")
+        if not isinstance(raw_entries, list) or not raw_entries:
+            problems.add("entries", f"must be a list of entries, each a mapping of {list(_ENTRY_KEYS)}, "
+                                    f"got {raw_entries!r}")
+        else:
+            for i, raw in enumerate(raw_entries):
+                if not isinstance(raw, dict):
+                    problems.add(f"entries[{i}]", f"must be a mapping of {list(_ENTRY_KEYS)}, got {raw!r}")
+                    continue
+                for key in sorted(set(raw) - set(_ENTRY_KEYS)):
+                    problems.add(f"entries[{i}].{key}", f"not an entries field (the fields are {list(_ENTRY_KEYS)})")
+                spec = _entry(raw, f"entries[{i}].", problems)
+                if spec is not None:
+                    entries.append((i, spec))
+            _check_entries(entries, problems)
+    else:
+        spec = _entry(values, "", problems)
+        if spec is not None:
+            entries.append((0, spec))
 
     if "approved_boundaries" not in values:
         problems.add("approved_boundaries", "missing; a person states the approved boundaries, "
@@ -423,20 +465,6 @@ def parse_instrument_plan(text: str, *, source: str) -> InstrumentPlan:
         boundaries: tuple[str, ...] = ()
     else:
         boundaries = _names(values, "approved_boundaries", "approved_boundaries", problems)
-
-    stages: list[Stage] = []
-    raw_stages = values.get("stages")
-    if not raw_stages:
-        problems.add("stages", "missing; a person lists the stages, in the order they run")
-    elif not isinstance(raw_stages, list):
-        problems.add("stages", f"must be a list of stages, got {raw_stages!r}")
-    else:
-        names: list[str] = []
-        for i, raw in enumerate(raw_stages):
-            stage = _stage(raw, i, names, problems)
-            if stage is not None:
-                stages.append(stage)
-                names.append(stage.name)
 
     ci = None
     raw_ci = values.get("ci")
@@ -456,46 +484,6 @@ def parse_instrument_plan(text: str, *, source: str) -> InstrumentPlan:
         if install and run and baseline:
             ci = CiSpec(install, run, baseline)
 
-    corpus = None
-    raw_corpus = values.get("corpus")
-    if raw_corpus is not None and not _open(raw_corpus):
-        if not isinstance(raw_corpus, dict):
-            problems.add("corpus", f"must be a mapping {{from, stages, index_stage}}, got {raw_corpus!r}")
-        else:
-            #: Each answered field is checked; one still holding a `DECIDE:` question is named
-            #: once, as an open question, and not also as a wrong value.
-            for key in sorted(set(raw_corpus) - {"from", "stages", "index_stage"}):
-                problems.add(f"corpus.{key}", "not a corpus field (the fields are from, stages and index_stage)")
-            source_ = None
-            if not _open(raw_corpus.get("from")):
-                source_ = _text(raw_corpus, "from", "corpus.from", problems, required=True)
-            linked: tuple[str, ...] = ()
-            raw_linked = raw_corpus.get("stages")
-            if not (_open(raw_linked) or (isinstance(raw_linked, list) and any(_open(s) for s in raw_linked))):
-                linked = _names(raw_corpus, "stages", "corpus.stages", problems)
-                if not linked:
-                    problems.add("corpus.stages", "missing; a person names the stages the link is recorded on")
-                planned = {s.name for s in stages}
-                for s in linked:
-                    if s not in planned:
-                        problems.add("corpus.stages", f"{s!r} is not a planned stage")
-            #: No default, as in the SDK: without it, the link is recorded bare. It names a stage of
-            #: the ingest run, which this plan does not plan (a plan has one entry), so it is not
-            #: checked against this plan's stages; a function's `module:name` is not a stage name.
-            index_stage = None
-            if not _open(raw_corpus.get("index_stage")):
-                index_stage = _text(raw_corpus, "index_stage", "corpus.index_stage", problems, required=False)
-                if index_stage is not None and _FUNCTION_RE.fullmatch(index_stage):
-                    problems.add("corpus.index_stage", f"{index_stage!r} names a function; name the ingest stage "
-                                                       f"(its name in the ingest's plan) whose output is the chunk index")
-                    index_stage = None
-            if source_ and linked:
-                corpus = CorpusSpec(source_, linked, index_stage)
-    if "entries" in values:
-        problems.add("entries", "several entries (one run type each) are generated as decorators, "
-                                "which this build has not yet been checked against (onetrace 0.2.0); "
-                                "plan one entry for now")
-
     sign = _block(values, "sign", problems)
     anchor = _block(values, "anchor", problems)
     trust = _block(values, "trust", problems)
@@ -505,8 +493,115 @@ def parse_instrument_plan(text: str, *, source: str) -> InstrumentPlan:
 
     if problems.items:
         raise PlanRefused(source, problems.items)
-    return InstrumentPlan(source, approved_by, entry, run_dir, tuple(stages), boundaries, ci,
-                          sign, anchor, trust, corpus)
+    specs = tuple(spec for _, spec in entries)
+    first = specs[0]
+    return InstrumentPlan(source, approved_by, first.entry, first.run_dir, first.stages, boundaries, ci,
+                          sign, anchor, trust, first.corpus, entries=specs)
+
+
+def _entry(values: dict, prefix: str, problems: _Problems) -> EntrySpec | None:
+    """One entry's fields, from the top level of a plan (prefix "") or from one of its entries."""
+    entry = None
+    entry_text = _text(values, "entry", f"{prefix}entry", problems, required=True)
+    if entry_text is not None:
+        entry = _function_ref(entry_text, f"{prefix}entry", problems)
+
+    field = f"{prefix}run_dir"
+    run_dir = _text(values, "run_dir", field, problems, required=True)
+    if run_dir is not None and _relative_path(run_dir.replace("{run_id}", "x"), field, problems):
+        if set(re.findall(r"\{([^}]*)\}", run_dir)) - {"run_id"} or "{" in run_dir.replace("{run_id}", ""):
+            problems.add(field, f"{run_dir!r}: the only placeholder is {{run_id}}")
+        elif "{run_id}" not in run_dir:
+            problems.add(field, f"{run_dir!r} has no {{run_id}}; each run is written to a folder of "
+                                f"its own, and a second run into the same folder is refused")
+
+    stages: list[Stage] = []
+    raw_stages = values.get("stages")
+    if not raw_stages:
+        problems.add(f"{prefix}stages", "missing; a person lists the stages, in the order they run")
+    elif not isinstance(raw_stages, list):
+        problems.add(f"{prefix}stages", f"must be a list of stages, got {raw_stages!r}")
+    else:
+        names: list[str] = []
+        for i, raw in enumerate(raw_stages):
+            stage = _stage(raw, i, names, problems, prefix)
+            if stage is not None:
+                stages.append(stage)
+                names.append(stage.name)
+
+    corpus = _corpus(values.get("corpus"), prefix, stages, problems)
+    if entry is None or run_dir is None:
+        return None
+    return EntrySpec(entry, run_dir, tuple(stages), corpus)
+
+
+def _corpus(raw_corpus, prefix: str, stages: list[Stage], problems: _Problems) -> CorpusSpec | None:
+    if raw_corpus is None or _open(raw_corpus):
+        return None
+    at = f"{prefix}corpus"
+    if not isinstance(raw_corpus, dict):
+        problems.add(at, f"must be a mapping {{from, stages, index_stage}}, got {raw_corpus!r}")
+        return None
+    #: Each answered field is checked; one still holding a `DECIDE:` question is named once, as
+    #: an open question, and not also as a wrong value.
+    for key in sorted(set(raw_corpus) - {"from", "stages", "index_stage"}):
+        problems.add(f"{at}.{key}", "not a corpus field (the fields are from, stages and index_stage)")
+    source_ = None
+    if not _open(raw_corpus.get("from")):
+        source_ = _text(raw_corpus, "from", f"{at}.from", problems, required=True)
+        #: A run folder in the repository, as E2 has it.
+        if source_ is not None and not _relative_path(source_, f"{at}.from", problems):
+            source_ = None
+    linked: tuple[str, ...] = ()
+    raw_linked = raw_corpus.get("stages")
+    if not (_open(raw_linked) or (isinstance(raw_linked, list) and any(_open(s) for s in raw_linked))):
+        linked = _names(raw_corpus, "stages", f"{at}.stages", problems)
+        if not linked:
+            problems.add(f"{at}.stages", "missing; a person names the stages the link is recorded on")
+        planned = {s.name for s in stages}
+        for s in linked:
+            if s not in planned:
+                problems.add(f"{at}.stages", f"{s!r} is not a planned stage")
+    #: No default, as in the SDK: without it, the link is recorded bare. It names a stage of the
+    #: ingest run: in a plan with entries, a stage of another entry (checked there); a
+    #: function's `module:name` is not a stage name.
+    index_stage = None
+    if not _open(raw_corpus.get("index_stage")):
+        index_stage = _text(raw_corpus, "index_stage", f"{at}.index_stage", problems, required=False)
+        if index_stage is not None and _FUNCTION_RE.fullmatch(index_stage):
+            problems.add(f"{at}.index_stage", f"{index_stage!r} names a function; name the ingest stage "
+                                              f"(its name in the ingest's plan) whose output is the chunk index")
+            index_stage = None
+    if source_ and linked:
+        return CorpusSpec(source_, linked, index_stage)
+    return None
+
+
+def _check_entries(entries: list[tuple[int, EntrySpec]], problems: _Problems) -> None:
+    """What holds across a plan's entries: each has its own entry function and its own
+    run_dir, and an index_stage names a stage of another entry (the ingest's)."""
+    for n, (i, spec) in enumerate(entries):
+        for j, other in entries[:n]:
+            if spec.entry == other.entry:
+                problems.add(f"entries[{i}].entry", f"{spec.entry} is also entries[{j}]'s entry; each entry "
+                                                    f"is one run type")
+            if spec.run_dir == other.run_dir:
+                problems.add(f"entries[{i}].run_dir", f"{spec.run_dir!r} is also entries[{j}]'s; each entry's "
+                                                      f"runs are written to a folder of their own")
+    for i, spec in entries:
+        if spec.corpus is None or spec.corpus.index_stage is None:
+            continue
+        name = spec.corpus.index_stage
+        others = {s.name for j, e in entries if j != i for s in e.stages}
+        if name in others:
+            continue
+        if name in {s.name for s in spec.stages}:
+            why = (f"{name!r} is a stage of this entry; index_stage names the ingest stage whose output is "
+                   f"the chunk index, a stage of another entry")
+        else:
+            why = (f"{name!r} is not a stage of another entry (theirs are "
+                   f"{sorted(others) if others else 'none'})")
+        problems.add(f"entries[{i}].corpus.index_stage", why)
 
 
 def load_instrument_plan(path: Path) -> InstrumentPlan:
