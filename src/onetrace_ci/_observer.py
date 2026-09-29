@@ -21,7 +21,8 @@ entry's own calls, or in another thread or task while the entry was running.
 There may be several entries (an ingest run and a query run, say). The first is the one
 discovery drafts a plan for. An event in a run of another is marked with that entry's index
 (`"entry": 1`), so that what the other writes can be joined to what the first reads, and none
-of it is taken for the first's.
+of it is taken for the first's. The first wins: a run of another inside a run of the first is
+the first's, as it would be were the other not named.
 
 WHAT IT NEVER RECORDS
 ---------------------
@@ -57,6 +58,7 @@ import time
 import types
 
 _STARTED = time.time_ns()
+_COUNTER = time.perf_counter_ns()
 _PREFIX = "ONETRACE_CI_DISCOVER_"
 _REPO = os.path.normcase(os.path.abspath(os.environ[_PREFIX + "REPO"]))
 _KEY = bytes.fromhex(os.environ[_PREFIX + "KEY"])
@@ -106,6 +108,13 @@ def _failed(where, exc):
     key = f"{where}: {type(exc).__name__}"
     with _lock:
         _errors[key] = _errors.get(key, 0) + 1
+
+
+def _now():
+    """Nanoseconds since the epoch: the wall clock when this process started, carried on by the
+    high-resolution counter, so that two events in one process never share a time (the wall
+    clock alone ticks in steps of up to 16 ms on Windows)."""
+    return _STARTED + time.perf_counter_ns() - _COUNTER
 
 
 def _fp(data):
@@ -311,6 +320,16 @@ def _running():
     return next((i for i, n in enumerate(_active) if n > 0), None)
 
 
+def _within_first(frame):
+    """Whether a run of the first entry is on the stack above `frame`."""
+    frame = frame.f_back
+    while frame is not None:
+        if _is_user(frame.f_code.co_filename) and _entry_of(frame) == 0:
+            return True
+        frame = frame.f_back
+    return False
+
+
 def _tagged(event, entry):
     """Mark an event from a run of an entry other than the first."""
     if entry:
@@ -337,21 +356,24 @@ def _where(frame):
     None when no user frame is on it (the observer, the standard library or a test runner acting
     alone), or when it is the standard library reading source code to print a traceback.
     `inside` names the passed-through function it ran in, when that is all there is between it
-    and the entry; `entry` is the index of the entry whose run it is in, if any."""
+    and the entry; `entry` is the index of the entry whose run it is in, if any: the first's,
+    if a run of the first is anywhere on the stack, else the innermost other's."""
     site, stage, in_run, child, via, inside, entry = None, None, False, None, None, None, None
+    other = None                        # (entry, stage, inside) in the innermost run of another entry
     while frame is not None:
         code = frame.f_code
         if _is_user(code.co_filename):
             if site is None:
                 site = (_code_file(code.co_filename)[0], frame.f_lineno)
-            entry = _entry_of(frame)
-            if entry is not None:
-                in_run = True
-                if child is not None:
-                    stage = _dotted(child)
-                elif inside is not None:
-                    inside = _dotted(inside)
-                break
+            found = _entry_of(frame)
+            if found is not None:
+                here = (_dotted(child) if child is not None else None,
+                        _dotted(inside) if child is None and inside is not None else None)
+                if found == 0:
+                    in_run, entry, (stage, inside), other = True, 0, here, None
+                    break
+                if other is None:
+                    other = (found, *here)
             if not _transparent(frame):
                 child = frame
             elif _named_function(frame):
@@ -364,8 +386,12 @@ def _where(frame):
         frame = frame.f_back
     if site is None:
         return None
-    if not in_run and _running() is not None:
-        in_run, entry = "elsewhere", _running()     # another thread, or a task, while an entry ran
+    if other is not None:
+        in_run, (entry, stage, inside) = True, other
+    if not in_run:
+        running = _running()
+        if running is not None:
+            in_run, entry = "elsewhere", running    # another thread, or a task, while an entry ran
     return site, stage, in_run, via, (inside if isinstance(inside, str) else None), entry
 
 
@@ -625,7 +651,8 @@ class _Open:
                 if isinstance(path, bytes):
                     path = os.fsdecode(path)
                 name, where, package, under = _file_name(path)
-                fields = dict(name=name, where=where, path=_fp(os.fsencode(os.path.abspath(path))))
+                fields = dict(name=name, where=where, at=_now(),
+                              path=_fp(os.fsencode(os.path.normcase(os.path.abspath(path)))))
                 if package is not None:
                     fields["package"] = package
                 if under is not None:
@@ -1007,13 +1034,14 @@ def _on_exception(frame, arg):
 
 def _on_return(frame, arg):
     pending = _calls.get(id(frame))
-    entry = _entry_of(frame) if pending is None else None
+    entry = _entry_of(frame)
     leaving = _raising.pop(id(frame), None) == frame.f_lasti
     if (pending is None and entry is None) or (not leaving and _suspends(frame)):
         return
     if entry is not None:
         with _lock:
             _active[entry] = max(0, _active[entry] - 1)
+    if pending is None:
         return
     del _calls[id(frame)]
     if _returns(frame):
@@ -1049,18 +1077,22 @@ def _on_call(frame):
         return None
     starting = _starts(frame)
     entry = _entry_of(frame)
-    if entry is not None:
-        if starting:
-            with _Busy():
-                run = _tagged({"kind": "entry", "args": _args(frame)}, entry)
-            with _lock:
-                _events.append(run)
-                _active[entry] += 1
-        return _local_trace
+    if entry is not None and starting:
+        with _Busy():
+            run = _tagged({"kind": "entry", "args": _args(frame)}, entry)
+            if entry and _within_first(frame):
+                run["within_first"] = True
+        with _lock:
+            _events.append(run)
+            _active[entry] += 1
     if not starting:
         return _local_trace
     caller = _caller(frame)
     by = _entry_of(caller) if caller is not None else None
+    if entry is not None and (entry == 0 or by != 0):
+        #: A run of an entry is not a call to a stage, unless the first entry calls another
+        #: directly: then it is one of the first's stages, as it would be were the other not named.
+        return _local_trace
     if _transparent(frame):
         if _named_function(frame) and by is not None:
             with _Busy():
@@ -1085,10 +1117,10 @@ def _on_call(frame):
             _events.append(call)
         if call["returned"] is None:
             _calls[id(frame)] = call
-    elif caller is None and _running() is not None:
+    elif caller is None and (running := _running()) is not None:
         with _Busy():
             other = _tagged({"kind": "elsewhere-call", "function": _dotted(frame),
-                             "site": "%s:%d" % (_code_file(code.co_filename)[0], code.co_firstlineno)}, _running())
+                             "site": "%s:%d" % (_code_file(code.co_filename)[0], code.co_firstlineno)}, running)
         with _lock:
             _events.append(other)
     return _local_trace

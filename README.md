@@ -332,13 +332,16 @@ onetrace-ci discover --entry pipeline.main:run --entry pipeline.ingest:run -- py
 The plan is drafted for the first entry. The others are observed in the same
 command, and the draft gains a `corpus` question: which ingest run does the
 query read? The question carries what the fixtures showed. It says which of
-the first entry's stages read a file that another entry wrote, matched by the
-file's path. For a file git doesn't track, it names the nearest directory
+the first entry's stages read a file after another entry wrote it, matched
+by the file's path, and which read one only before it was written (a stale
+index, say). For a file git doesn't track, it names the nearest directory
 that holds a file git does track. Discovery never chooses the ingest run: a
 person answers with `from:` and `stages:`, or deletes the line. Until the
 next onetrace release, `instrument` refuses a plan with a `corpus` (see
-above). The report lists what each other entry called and wrote. Discovery
-refuses if the command never called one of the entries.
+above). The report lists what each other entry called, read and wrote.
+Discovery refuses if the command never called one of the entries. The first
+entry wins: if it calls another entry itself, that call is one of its stages,
+exactly as when only the first is named.
 
 It runs the command you give it, unchanged, with an observer loaded for that
 command only. It sees what your fixtures do and nothing else: it never calls
@@ -368,7 +371,9 @@ a draft someone may have started answering.
   message (types only). Fingerprints are keyed by a random key made for that
   one discovery and never written down, so they join events within it but
   can't be looked up afterwards. An event from a run of an entry other than
-  the first is marked with that entry's number (`"entry": 1`).
+  the first is marked with that entry's number (`"entry": 1`). A file read
+  or write also carries the time it happened, so a read can be ordered
+  against a write.
 
 **No name that could carry a value is written either.**
 
@@ -427,6 +432,10 @@ not yet take in LangChain or LlamaIndex callbacks or OpenTelemetry spans.
   and another reads. Across entries, the `corpus` question says that a stage
   read a file at the path another entry wrote to. It doesn't say that the
   stage read what was written there.
+- Only files opened with `open()` (and the `Path` methods built on it) are
+  matched, by path. A file written under another name and renamed into
+  place, or read through `sqlite3` or a C extension, isn't. So "no read was
+  seen" doesn't mean nothing was read.
 
 ## What this is not
 

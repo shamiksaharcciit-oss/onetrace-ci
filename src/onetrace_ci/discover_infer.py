@@ -335,45 +335,94 @@ def _files(written: dict) -> tuple[str, str]:
 
 def _other_entries(entry: str, others: list[str], events: list[dict], stages: dict) -> tuple[list[str], list[str]]:
     """For each entry other than the planned one (an ingest run, say): what it did, for the
-    report, and whether the planned entry read a file it wrote, for the corpus question. Reads
-    and writes are joined by path: what was written is not fingerprinted, so this says the
-    query read the file the ingest wrote, not that it read what the ingest wrote there."""
-    readers: dict[str, list[str]] = {}          # path fingerprint -> who in the planned entry read it
+    report, and whether a run of the planned entry read a file after the other wrote it, for the
+    corpus question. Reads and writes are joined by path, and only those made through `open()`
+    are seen: what was written is not fingerprinted, so this says the query read the file at the
+    path the ingest wrote to, not that it read what the ingest wrote there. Order is the events
+    file's own within a process, and the observer's clock between processes."""
+    caller = entry.rpartition(":")[2]
+    process, order = 0, {}
+    for n, e in enumerate(events):
+        if e["kind"] == "process":
+            process = e["index"]
+        order[id(e)] = (process, n, e.get("at", 0))
+
+    def after(read: dict, write: dict) -> bool:
+        r, w = order[id(read)], order[id(write)]
+        return r[1] > w[1] if r[0] == w[0] else r[2] > w[2]
+
+    reads: dict[str, list[tuple[dict, str]]] = {}    # path fingerprint -> [(read, who)] in the planned entry's runs
     for e in events:
         if e["kind"] == "file-read" and not e.get("entry") and e.get("in_run") and e.get("path"):
             s = stages.get(e.get("stage")) if e.get("stage") else None
-            who = s.name if s is not None else f"{entry.rpartition(':')[2]} itself"
-            if who not in readers.setdefault(e["path"], []):
-                readers[e["path"]].append(who)
+            if s is not None:
+                who = s.name
+            elif e["in_run"] == "elsewhere":
+                who = f"code in another thread or task while {caller} ran"
+            else:
+                who = f"{caller} itself"
+            reads.setdefault(e["path"], []).append((e, who))
     lines, evidence = [], []
     for i, other in enumerate(others, start=1):
         own = [e for e in events if e.get("entry") == i]
-        runs = sum(1 for e in own if e["kind"] == "entry")
+        runs = [e for e in own if e["kind"] == "entry"]
+        nested = sum(1 for e in runs if e.get("within_first"))
         called = list(dict.fromkeys(e["function"] for e in own if e["kind"] == "call"))
-        written: dict[str, dict] = {}
+        read, written = {}, {}
         for e in own:
-            if e["kind"] == "file-write" and e.get("path"):
-                written.setdefault(e["path"], e)
-        joined = {p: e for p, e in written.items() if p in readers}
-        who = list(dict.fromkeys(w for p in joined for w in readers[p]))
-        line = (f"`{other}` ran {'once' if runs == 1 else f'{runs} times'}. "
-                + (f"It called {_list(called)}. " if called else "It called no function of the repository directly. "))
+            if e["kind"] == "file-read" and e.get("path"):
+                read.setdefault(e["path"], e)
+            elif e["kind"] == "file-write" and e.get("path"):
+                written.setdefault(e["path"], e)            # its first write
+        joined, stale, who, who_stale = {}, {}, [], []
+        for path, write in written.items():
+            seen = reads.get(path, [])
+            later = [w for r, w in seen if after(r, write)]
+            earlier = [w for r, w in seen if not after(r, write)]
+            if later:
+                joined[path] = write
+                who += later
+            elif earlier:
+                stale[path] = write
+                who_stale += earlier
+        who, who_stale = list(dict.fromkeys(who)), list(dict.fromkeys(who_stale))
+
+        times = "once" if len(runs) == 1 else f"{len(runs)} times"
+        if nested == len(runs):
+            line = (f"`{other}` ran {times}, inside a run of `{entry}`, where what it did is recorded as that "
+                    f"run's own.")
+            lines.append(line)
+            evidence.append(f"{other} ran only inside runs of {entry}, where what it did is the query's own")
+            continue
+        line = f"`{other}` ran {times}"
+        line += (f", {nested} of them inside a run of `{entry}`, where what it did is recorded as that run's "
+                 f"own. " if nested else ". ")
+        line += f"It called {_list(called)}. " if called else "It called no function of the repository directly. "
+        if read:
+            count, detail = _files(read)
+            line += f"It read {count} {detail}. "
         if not written:
             line += "It wrote no file."
         else:
             count, detail = _files(written)
             if not joined:
-                line += f"It wrote {count} {detail}; the planned entry " + (
-                    "did not read it." if len(written) == 1 else "read none of them.")
+                line += (f"It wrote {count} {detail}; no read of {'it' if len(written) == 1 else 'them'} was seen "
+                         f"after the write in a run of `{entry}`.")
             else:
                 share = "it" if len(written) == 1 else ("them all" if len(joined) == len(written) else f"{len(joined)} of them")
-                line += f"It wrote {count} {detail}, and {_list(who)} read {share}."
-        lines.append(line)
+                line += f"It wrote {count} {detail}, and {_list(who)} read {share} afterwards."
+        lines.append(line.rstrip())
         if joined:
             count, detail = _files(joined)
-            evidence.append(f"{_list(who)} read {count} that {other} wrote {detail}")
+            said = f"{_list(who)} read {count} that {other} wrote {detail}"
         else:
-            evidence.append(f"no file that {other} wrote was read in a run of {entry}")
+            said = (f"no read of a file {other} wrote was seen after the write (only reads through open() are "
+                    f"observed, matched by path)")
+        if stale:
+            count, detail = _files(stale)
+            where = "a path" if len(stale) == 1 else "paths"
+            said += f"; {_list(who_stale)} read {count} at {where} {other} later wrote to {detail}, before it wrote there"
+        evidence.append(said)
     return lines, evidence
 
 

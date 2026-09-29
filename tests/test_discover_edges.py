@@ -14,7 +14,7 @@ import pytest
 from onetrace_ci.discover import main, observe
 from onetrace_ci.instrument_plan import PlanRefused, parse_instrument_plan
 from onetrace_ci.plan import find_open_questions, read_document
-from tests.discover_fixtures import MARKER, make_discover_repo
+from tests.discover_fixtures import CORPUS, LLM, MAIN, MARKER, RETRIEVAL, make_discover_repo
 
 REQUEST = "what does the warranty cover"
 RUN = [sys.executable, "-c", f"from pipeline.main import run; run({REQUEST!r})"]
@@ -1321,7 +1321,8 @@ INGEST_THEN_QUERY = [sys.executable, "-c", "from pipeline.ingest import run as i
 BOTH = ["pipeline.main:run", "pipeline.ingest:run"]
 
 
-def test_a_query_that_reads_what_an_ingest_wrote_is_asked_which_ingest_run(tmp_path, monkeypatch, capsys, examined):
+def test_a_query_that_reads_what_an_ingest_wrote_is_asked_which_ingest_run(tmp_path, monkeypatch, capsys, examined,
+                                                                           qualnames):
     """The first --entry is the run the draft plans; a further one is observed in the same
     command, so that what it writes can be joined, by path fingerprint, to what the first reads."""
     rc, draft, report, _, err = discover_in(
@@ -1336,8 +1337,8 @@ def test_a_query_that_reads_what_an_ingest_wrote_is_asked_which_ingest_run(tmp_p
                              "(a run folder or a manifest digest) and stages: (where the link is recorded), "
                              "or delete this line for no link")
     other = section(report, "Other entries")
-    assert "- `pipeline.ingest:run` ran once. It called pipeline.ingest:chunk. It wrote 1 file (not tracked " \
-           "by git, under data/), and retrieve read it." in other
+    assert "- `pipeline.ingest:run` ran once. It called pipeline.ingest:chunk. It read 1 file (`data/corpus.json`). " \
+           "It wrote 1 file (not tracked by git, under data/), and retrieve read it afterwards." in other
 
 
 def test_another_entry_s_calls_and_files_are_not_the_planned_entry_s(tmp_path, monkeypatch, capsys, examined):
@@ -1372,10 +1373,11 @@ def test_another_entry_that_wrote_nothing_the_query_read_is_still_asked_about(tm
     corpus = read_document(draft, source="draft")["corpus"]
     examined(2, "the corpus question and the report")
     assert rc == 0, err
-    assert corpus.startswith("DECIDE: which ingest run does the query read? no file that pipeline.ingest:run "
-                             "wrote was read in a run of pipeline.main:run. ")
-    assert "It wrote 1 file (not tracked by git, under data/); the planned entry did not read it." in \
-        section(report, "Other entries")
+    assert corpus.startswith("DECIDE: which ingest run does the query read? no read of a file "
+                             "pipeline.ingest:run wrote was seen after the write (only reads through open() are "
+                             "observed, matched by path). ")
+    assert ("It wrote 1 file (not tracked by git, under data/); no read of it was seen after the write in a run of "
+            "`pipeline.main:run`.") in section(report, "Other entries")
 
 
 def test_another_entry_the_command_never_called_is_refused(tmp_path, monkeypatch, capsys, examined):
@@ -1392,3 +1394,120 @@ def test_one_entry_drafts_no_corpus_question(tmp_path, monkeypatch, capsys, exam
     assert rc == 0, err
     assert "corpus" not in read_document(draft, source="draft")
     assert "## Other entries" not in report
+
+
+NESTED_MAIN = """\
+import os
+from pathlib import Path
+
+from pipeline.ingest import run as ingest
+from pipeline.llm import answer
+from pipeline.retrieval import retrieve
+
+SETTINGS = (Path(__file__).resolve().parents[1] / "config" / "settings.txt").read_text()
+
+
+def run(request):
+    mode = os.environ.get("PIPELINE_MODE", "normal")
+    ingest()
+    passages = retrieve(request)
+    return answer(request, passages, mode)
+"""
+
+
+def test_an_entry_run_inside_the_planned_entry_leaves_its_draft_as_it_would_be_alone(
+        tmp_path, monkeypatch, capsys, examined):
+    """The planned entry wins: an ingest the query itself calls is one of the query's stages, as
+    it is when only the query is named, and nothing it does is joined."""
+    files = {"repo/pipeline/main.py": NESTED_MAIN, "repo/pipeline/ingest.py": INGEST,
+             "repo/pipeline/retrieval.py": QUERY_RETRIEVAL}
+    rc1, alone, _, _, err1 = discover_in(tmp_path / "one", monkeypatch, capsys, files)
+    rc2, both, report, _, err2 = discover_in(tmp_path / "two", monkeypatch, capsys, files, entries=BOTH)
+    examined(3, "the draft alone, the draft with both entries, and the report")
+    assert rc1 == 0 and rc2 == 0, err1 + err2
+    assert [s.get("function") for s in stages_of(alone)] == \
+        [None, "pipeline.ingest:run", "pipeline.retrieval:retrieve", "pipeline.llm:answer"]
+    corpus = [line for line in both.splitlines() if line.startswith("corpus:")]
+    assert [line for line in both.splitlines() if not line.startswith("corpus:")] == alone.splitlines()
+    assert "pipeline.ingest:run ran only inside runs of pipeline.main:run, where what it did is the query's own" \
+        in corpus[0]
+    assert ("- `pipeline.ingest:run` ran once, inside a run of `pipeline.main:run`, where what it did is recorded as "
+            "that run's own.") in section(report, "Other entries")
+
+
+def test_a_read_before_the_write_is_not_taken_for_a_read_of_what_was_written(tmp_path, monkeypatch, capsys, examined):
+    """A stale index left from before: the query reads it, then the ingest rewrites it."""
+    def stale(repo):
+        (repo / "data" / "index").mkdir()
+        (repo / "data" / "index" / "chunks.json").write_text(
+            '[{"id": 1, "text": "the warranty covers parts"}]', encoding="utf-8")
+
+    query_then_ingest = [sys.executable, "-c", "from pipeline.ingest import run as ingest; "
+                         f"from pipeline.main import run; run({REQUEST!r}); ingest()"]
+    rc, draft, _, _, err = discover_in(
+        tmp_path, monkeypatch, capsys, {"repo/pipeline/ingest.py": INGEST, "repo/pipeline/retrieval.py": QUERY_RETRIEVAL},
+        command=query_then_ingest, entries=BOTH, before=stale)
+    corpus = read_document(draft, source="draft")["corpus"]
+    examined(1, "the corpus question")
+    assert rc == 0, err
+    assert "no read of a file pipeline.ingest:run wrote was seen after the write" in corpus
+    assert ("retrieve read 1 file at a path pipeline.ingest:run later wrote to (not tracked by git, under data/), "
+            "before it wrote there") in corpus
+
+
+THREAD_RETRIEVAL = """\
+import json
+import threading
+from pathlib import Path
+
+INDEX = Path(__file__).resolve().parents[1] / "data" / "index"
+
+
+def retrieve(request):
+    found = []
+    reader = threading.Thread(target=lambda: found.append(json.loads((INDEX / "chunks.json").read_text(encoding="utf-8"))))
+    reader.start()
+    reader.join()
+    words = set(request.lower().split())
+    return sorted(found[0], key=lambda d: -len(words & set(d["text"].lower().split())))[:1]
+"""
+
+
+def test_a_read_in_another_thread_is_not_credited_to_the_entry_function(tmp_path, monkeypatch, capsys, examined):
+    rc, draft, _, _, err = discover_in(
+        tmp_path, monkeypatch, capsys, {"repo/pipeline/ingest.py": INGEST, "repo/pipeline/retrieval.py": THREAD_RETRIEVAL},
+        command=INGEST_THEN_QUERY, entries=BOTH)
+    corpus = read_document(draft, source="draft")["corpus"]
+    examined(1, "the corpus question")
+    assert rc == 0, err
+    assert "code in another thread or task while run ran read 1 file that pipeline.ingest:run wrote" in corpus
+    assert "run itself" not in corpus
+
+
+def test_two_spellings_of_one_entry_are_one_entry(tmp_path, monkeypatch, capsys, examined):
+    """In a src layout, `pipeline.main` and `src.pipeline.main` are the same file."""
+    moved = {f"repo/{name}": None for name in ("pipeline/__init__.py", "pipeline/main.py", "pipeline/retrieval.py",
+                                                "pipeline/llm.py", "data/corpus.json", "config/settings.txt")}
+    moved.update({"repo/src/pipeline/__init__.py": "", "repo/src/pipeline/main.py": MAIN_SOURCE,
+                  "repo/src/pipeline/retrieval.py": RETRIEVAL_SOURCE, "repo/src/pipeline/llm.py": LLM_SOURCE,
+                  "repo/src/data/corpus.json": CORPUS_TEXT, "repo/src/config/settings.txt": "mode=normal\n"})
+    rc, draft, report, _, err = discover_in(tmp_path, monkeypatch, capsys, moved, extra_path=("src",),
+                                            entries=["pipeline.main:run", "src.pipeline.main:run"])
+    examined(2, "the draft and the report")
+    assert rc == 0, err
+    assert "corpus" not in read_document(draft, source="draft")
+    assert "## Other entries" not in report
+
+
+MAIN_SOURCE, RETRIEVAL_SOURCE, LLM_SOURCE, CORPUS_TEXT = MAIN, RETRIEVAL, LLM, json.dumps(CORPUS)
+
+
+@pytest.mark.skipif(os.path.normcase("A") == "A", reason="only where the filesystem folds case")
+def test_a_path_spelled_in_another_case_is_the_same_file(tmp_path, monkeypatch, capsys, examined):
+    upper = QUERY_RETRIEVAL.replace('/ "data" / "index"', '/ "DATA" / "INDEX"')
+    rc, draft, _, _, err = discover_in(
+        tmp_path, monkeypatch, capsys, {"repo/pipeline/ingest.py": INGEST, "repo/pipeline/retrieval.py": upper},
+        command=INGEST_THEN_QUERY, entries=BOTH)
+    examined(1, "the corpus question")
+    assert rc == 0, err
+    assert "retrieve read 1 file that pipeline.ingest:run wrote" in read_document(draft, source="draft")["corpus"]

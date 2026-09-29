@@ -347,6 +347,11 @@ def discover(*, entry: str, command: list[str], repo: Path, out_dir: Path,
                                   f"(a person may have started answering it)")
     with tempfile.TemporaryDirectory(prefix="onetrace-ci-events-") as tmp:
         events_tmp = Path(tmp) / EVENTS
+        #: Two spellings of one function (`pipeline.main` and `src.pipeline.main`) are one entry.
+        resolved = {(entry_file(repo, entry), entry.partition(":")[2]): entry}
+        for other in others:
+            resolved.setdefault((entry_file(repo, other), other.partition(":")[2]), other)
+        others = list(resolved.values())[1:]
         result = observe(command, repo=repo, entry=entry, events_path=events_tmp, others=others)
         if result.returncode != 0:
             raise DiscoverRefused(f"the command exited {result.returncode}; discovery drafts only from "
