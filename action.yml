@@ -71,12 +71,13 @@ runs:
         cat "${{ inputs.out }}/summary.md" >> "$GITHUB_STEP_SUMMARY"
         exit $code
 
-    - name: Upload the gate's own run and reports
+    # Only the gate's report (stage names, digests, verdicts and settings), never the run itself,
+    # whose stored outputs are the pipeline's data. In a public repository anyone can read it.
+    - name: Upload the gate's report
       if: always()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
       with:
-        name: onetrace-ci-gate-output
-        path: |
-          ${{ inputs.run }}
-          ${{ inputs.out }}
+        name: onetrace-ci-gate-report
+        path: ${{ inputs.out }}
+        retention-days: 14
         if-no-files-found: warn

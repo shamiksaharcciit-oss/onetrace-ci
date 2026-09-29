@@ -33,3 +33,16 @@ def test_every_action_the_composite_action_uses_is_pinned_to_a_commit(examined):
     examined(len(uses), "actions the composite action uses")
     for ref in uses:
         assert re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", ref), f"{ref} is not pinned to a commit"
+
+
+def test_the_action_uploads_only_the_gate_report_and_for_a_stated_time(examined):
+    """The artifact holds only what the gate report holds (stage names, digests, verdicts and
+    settings), never the run's stored outputs, which are the pipeline's data; in a public
+    repository anyone can read it. It is kept for a stated time."""
+    steps = yaml.safe_load(ACTION.read_text(encoding="utf-8"))["runs"]["steps"]
+    uploads = [s for s in steps if "upload-artifact" in s.get("uses", "")]
+    examined(len(uploads), "upload steps in the composite action")
+    for step in uploads:
+        paths = [p.strip() for p in str(step["with"]["path"]).splitlines() if p.strip()]
+        assert paths == ["${{ inputs.out }}"], paths
+        assert 1 <= int(step["with"]["retention-days"]) <= 14

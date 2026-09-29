@@ -167,9 +167,14 @@ there is nothing yet to compare it against.
 ## The GitHub Action
 
 `action.yml`, a composite action. Runs the gate, appends `summary.md` to the
-job summary, uploads the run and report directories as an artifact. Needs
-only `contents: read` — no PR comment and no SARIF in phase 1, since both
-need write permissions a fork PR does not have.
+job summary, and uploads the gate's report directory as a workflow artifact,
+kept for 14 days. Needs only `contents: read` — no PR comment and no SARIF in
+phase 1, since both need write permissions a fork PR does not have.
+
+**The artifact is readable by anyone who can read the repository**, so in a
+public repository, by anyone. It holds only what the gate report holds: stage
+names, digests, verdicts and settings. It never holds the run itself, whose
+stored outputs are your pipeline's data.
 
 ## Instrument from a plan
 
@@ -393,6 +398,9 @@ not yet take in LangChain or LlamaIndex callbacks or OpenTelemetry spans.
   carries on and the report says it may be incomplete.
 - A program that inspects its own builtins can tell it is being observed:
   under the observer, `inspect.isbuiltin(open)` is false.
+- A file written is recorded by its path's fingerprint, not its content, so
+  discovery can't join two stages through a file one writes and another
+  reads.
 
 ## What this is not
 
