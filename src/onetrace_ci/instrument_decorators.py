@@ -713,7 +713,7 @@ def _find_refs(src: _Source, a: _Analysis, by_key: dict, problems: list[str]) ->
 def _outputs(src: _Source, a: _Analysis, by_key_names: set[str]) -> set[str]:
     """Names in the entry function that hold a stage's return value, unchanged: every binding of
     them is `name = stage(...)` (or `name = await stage(...)`), and every use of them is as a
-    stage's argument, in `return`, or a read (a truth test, `not`, a comparison, or a builtin
+    stage's argument, in `return`, or a read (an `if` test, `not`, a comparison, or a builtin
     such as `len` or `print`). Anything else might change the value in place
     (`passages.reverse()`, `passages[0] = ...`, `tidy(passages)`), and the SDK then records it as
     an in-memory input: it matches a stage's return value by identity, confirmed by digest."""
@@ -741,12 +741,6 @@ def _outputs(src: _Source, a: _Analysis, by_key_names: set[str]) -> set[str]:
                 allowed.update(id(arg.value) for arg in node.args if not arg.star)
 
         def visit_If(self, node):
-            allowed.add(id(node.test))
-
-        def visit_While(self, node):
-            allowed.add(id(node.test))
-
-        def visit_IfExp(self, node):
             allowed.add(id(node.test))
 
         def visit_UnaryOperation(self, node):

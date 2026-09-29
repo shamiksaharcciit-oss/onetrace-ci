@@ -132,10 +132,10 @@ def test_an_async_stage_retried_with_a_timeout_in_a_loop_is_decorated(tmp_path, 
 
 
 def test_a_stage_s_output_that_is_only_read_needs_no_trust(tmp_path, examined):
-    """A truth test, a comparison and `len` or `print` read a value and change nothing."""
+    """An `if` test, `not`, a comparison and `len` or `print` read a value and change nothing."""
     main_py = MAIN.replace("    passages = retrieve()\n",
                            "    passages = retrieve()\n    if not passages:\n        return None\n"
-                           "    print(len(passages))\n")
+                           "    if passages:\n        print(len(passages))\n    if passages == []:\n        return None\n")
     repo = make_repo(tmp_path / "repo", {"pipeline/main.py": main_py})
     result = _patch(repo)
     examined(1, "the patch for an entry that reads a stage's output")
@@ -476,7 +476,10 @@ REFUSED.update({
         ["stages[1].trust", "'style'", "default"]),
     "an @ot.stage left in a module the entry imports": (
         {"onetrace-plan.yaml": PLAN.replace(ANSWER_BLOCK, ""),
-         "pipeline/llm.py": 'import onetrace as ot\n\n\n@ot.stage("answer", rederivable=False)\n' + LLM},
+         "pipeline/llm.py": 'import onetrace as ot\n\n\n@ot.stage("answer", rederivable=False)\n' + LLM,
+         #: Reached through getattr, which no call-following sees: only the import is checked.
+         "pipeline/main.py": MAIN.replace("from pipeline.llm import answer\n", "import pipeline.llm as llm_mod\n")
+         .replace("    return answer(passages)\n", '    return getattr(llm_mod, "answer")(passages)\n')},
         ["'answer'", "the plan names no stage for it"]),
     "a constants name that is not a parameter": (
         {"onetrace-plan.yaml": PLAN.replace('    rederivable: "false"\n', '    rederivable: "false"\n    constants: [pasages]\n')},
