@@ -469,14 +469,16 @@ In decorator style it refuses, with the file and line (or the plan field):
 - a function it cannot resolve, a lambda, a generator or async generator, a
   class, or a name bound to anything but a function definition;
 - a stage that calls or uses another stage, in its own body or through the
-  repository's functions it calls;
+  repository's functions and classes it uses;
 - a stage the entry function never calls directly, and a stage's name
   shadowed there;
-- a stage reached some other way: through a variable, a helper function, a
-  nested function or lambda, or (async) a call not awaited where it is made;
+- a stage reached some other way: through a variable, a helper function or
+  class, a nested function or lambda, or (async) a call not awaited where it
+  is made;
 - a stage that may run more than once without `repeats: true`;
 - an `@ot.stage` with another name, or on a function the plan names no stage
-  for, in a module the patch touches or the entry imports;
+  for, in a module the patch touches, the entry imports, or the stages and
+  the entry's helpers reach;
 - a function stage named `intake` (the SDK's name for the entry's
   parameters), and the name `ot` bound in a module it decorates;
 - a `Recorder` already created, and code already instrumented in wrapper
@@ -485,6 +487,26 @@ In decorator style it refuses, with the file and line (or the plan field):
   may overlap (handed to a pool or `asyncio.gather`, say, more than once),
   and named `instances`, which each need `stage.instance(name)`; a `corpus`
   link; several `entries`.
+
+Its limits, stated plainly:
+
+- **It reads the code, and runs none of it.** A call through an object it
+  cannot resolve (a method of an object passed in, or returned by a call) is
+  not followed, so a stage run that way is not seen. The functions and
+  classes of the repository that the entry and the stages name are
+  followed.
+- **Stage bodies are not read for changes to their arguments.** If one stage
+  changes the value it is given, in place, and another stage is then given
+  the same value, the SDK records it for the second as an in-memory input.
+  With no `trust` in the plan for that stage, its run lists `trust` in
+  `assertions.undeclared`, and a gate that requires declared fields fails.
+- **A stage handed to a thread pool runs in another thread.** Whether the
+  SDK records that call in the run is the SDK's to show, with its first
+  release of the decorators.
+- **The workflow names the run by `ONETRACE_RUN_ID`.** The generated
+  workflow gates the run whose id that variable sets. Decorator output relies
+  on onetrace 0.2.0's `@ot.run` taking its run id from it, which its first
+  release of the decorators has to confirm.
 
 ## Discover the stages first
 

@@ -54,14 +54,17 @@ INTAKE = "intake"
 CONCURRENT = frozenset({"gather", "create_task", "ensure_future", "submit", "map", "starmap",
                         "imap", "imap_unordered", "map_async", "starmap_async", "apply_async",
                         "to_thread", "run_in_executor", "run_coroutine_threadsafe", "TaskGroup",
-                        "Thread", "Process", "start_new_thread", "as_completed", "wait", "wait_for",
-                        "shield", "start_soon", "start", "spawn", "run_sync"})
+                        "Thread", "Process", "start_new_thread", "as_completed", "wait",
+                        "start_soon", "start", "spawn", "run_sync"})
 #: Of those, the ones that call what they are given many times.
 _MANY = frozenset({"map", "starmap", "imap", "imap_unordered", "map_async", "starmap_async"})
-#: Calls that run the coroutine they are given, once: an async stage's call may be their argument.
-_RUNNERS = frozenset({"run", "run_until_complete"})
+#: Calls that run the coroutine they are given, once, before they return: an async stage's call
+#: may be their argument, and it overlaps nothing (`await asyncio.wait_for(answer(p), 5)`).
+_RUNNERS = frozenset({"run", "run_until_complete", "wait_for", "shield"})
 #: How far calls are followed into the repository's own functions.
 _DEPTH = 8
+#: Builtins that read the value they are given and change nothing.
+_READS = frozenset({"len", "print", "bool", "isinstance", "repr", "str", "type", "id"})
 _WAITS = "That form waits for onetrace 0.2.0's candidate, which does not carry it yet"
 
 
@@ -149,6 +152,8 @@ class _Analysis:
     entry_fn: object
     targets: dict[str, _Target]
     refs: dict[str, list[_Ref]] = field(default_factory=dict)
+    #: The modules already checked for an `@ot.stage` the plan does not match.
+    scanned: set[str] = field(default_factory=set)
 
 
 def plan_waits(plan: InstrumentPlan) -> list[str]:
@@ -388,21 +393,26 @@ def analyse(src: _Source, plan: InstrumentPlan) -> _Analysis:
     by_key = {t.key: name for name, t in targets.items()}
     by_node = {id(t.binding.node): name for name, t in targets.items()}
 
-    # No stage runs another: not in its own body, not through a function of the repository it
-    # calls, and not by being handed one.
+    # No stage runs another: not in its own body, not through a function or class of the
+    # repository it calls, and not by being handed one.
+    reached: dict[str, _Module] = {}
     for name, t in targets.items():
-        for node, module, other, is_call, via in _stage_uses(src, t.module, t.binding.node, by_key):
+        for node, module, other, is_call, via in _stage_uses(src, t.module, t.binding.node, by_key,
+                                                             reached=reached):
             where = "inside its own body" if not via else "through " + ", then ".join(via)
             problems.append(f"{module.at(node)}: stage {name!r} {'calls' if is_call else 'uses'} stage "
                             f"{other!r} {where}; nested stage calls are refused, because the inner stage "
                             f"would run inside the outer one")
 
     # The modules the patch touches: no star import, no Recorder of their own, the name `ot`
-    # free, and no `@ot.stage` the plan does not match. The modules the entry imports are
-    # checked for such an `@ot.stage` too: the SDK refuses a stage the run does not declare.
+    # free, and no `@ot.stage` the plan does not match. The modules the entry imports, and those
+    # the stages reach, are checked for such an `@ot.stage` too: the SDK refuses a stage the run
+    # does not declare.
     involved = {entry_mod.name: entry_mod, **{t.module.name: t.module for t in targets.values()}}
     constant_fns = {id(targets[s.name].binding.node) for s in plan.stages if s.constants and s.name in targets}
-    for module in [*involved.values(), *_imported(src, entry_mod, involved)]:
+    scanned = [*involved.values(), *_imported(src, entry_mod, involved)]
+    scanned += [m for m in reached.values() if m.name not in {x.name for x in scanned}]
+    for module in scanned:
         if module.name not in involved:
             problems.extend(_decorator_problems(src, module, by_node))
             continue
@@ -443,6 +453,7 @@ def analyse(src: _Source, plan: InstrumentPlan) -> _Analysis:
         raise Refused(problems)
 
     a = _Analysis(plan, entry_mod, entry_fn, targets)
+    a.scanned = {m.name for m in scanned}
     _find_refs(src, a, by_key, problems)
     _check_refs(src, a, problems)
     if problems:
@@ -499,10 +510,22 @@ def _imported(src: _Source, module: _Module, skip: dict) -> list[_Module]:
     return list(found.values())
 
 
-def _stage_uses(src: _Source, module: _Module, fn, by_key: dict, via: tuple = (), seen: set | None = None):
-    """Each use of a stage in `fn`'s body, and in the bodies of the repository's functions it
-    calls, transitively: (node, its module, the stage, whether it is a call, the functions on the
-    way there)."""
+def _bodies(cst, t: _Target) -> list[tuple[object, str]]:
+    """The function bodies a use of `t` may run, with their names: a function's own, or every
+    method of a class (`__init__` included), since an instance of it may call any of them."""
+    b = t.binding
+    if b.kind in ("def", "asyncdef"):
+        return [(b.node, t.name)]
+    if b.kind == "class" and isinstance(b.node.body, cst.IndentedBlock):
+        return [(s, f"{t.name}.{s.name.value}") for s in b.node.body.body if isinstance(s, cst.FunctionDef)]
+    return []
+
+
+def _stage_uses(src: _Source, module: _Module, fn, by_key: dict, via: tuple = (), seen: set | None = None,
+                reached: dict | None = None):
+    """Each use of a stage in `fn`'s body, and in the bodies of the repository's functions and
+    classes it uses, transitively: (node, its module, the stage, whether it is a call, the
+    functions on the way there). The modules it goes into are added to `reached`."""
     cst = src.cst
     seen = set() if seen is None else seen
     if (module.name, id(fn)) in seen or len(via) > _DEPTH:
@@ -543,9 +566,12 @@ def _stage_uses(src: _Source, module: _Module, fn, by_key: dict, via: tuple = ()
             continue
         if callee.key in by_key:
             yield node, module, by_key[callee.key], is_call, via
-        elif callee.binding.kind in ("def", "asyncdef"):
-            step = f"{callee.module.name}:{callee.name} ({callee.module.at(callee.binding.node)})"
-            yield from _stage_uses(src, callee.module, callee.binding.node, by_key, (*via, step), seen)
+            continue
+        for body, label in _bodies(cst, callee):
+            if reached is not None:
+                reached.setdefault(callee.module.name, callee.module)
+            step = f"{callee.module.name}:{label} ({callee.module.at(body)})"
+            yield from _stage_uses(src, callee.module, body, by_key, (*via, step), seen, reached)
 
 
 def _find_refs(src: _Source, a: _Analysis, by_key: dict, problems: list[str]) -> None:
@@ -559,6 +585,7 @@ def _find_refs(src: _Source, a: _Analysis, by_key: dict, problems: list[str]) ->
                  cst.GeneratorExp: "in a generator expression"}
     unseen = ("how often it runs, and whether its calls overlap, cannot be seen from the entry function; "
               "that is dynamic dispatch")
+    reached: dict[str, _Module] = {}     # the repository's modules the entry's helpers go into
 
     def called_name(call) -> str | None:
         f = call.func
@@ -627,17 +654,20 @@ def _find_refs(src: _Source, a: _Analysis, by_key: dict, problems: list[str]) ->
             return True
 
         def _helper(self, node, t):
-            """A function of the repository that the entry calls or hands over: a stage it runs,
-            itself or through the functions it calls, is out of the entry function's sight."""
-            if t.binding.kind not in ("def", "asyncdef") or t.key in self.helpers:
+            """A function or class of the repository that the entry uses: a stage it runs, itself
+            or through what it uses, is out of the entry function's sight."""
+            if t.key in self.helpers:
                 return
             self.helpers.add(t.key)
-            step = f"{t.module.name}:{t.name} ({t.module.at(t.binding.node)})"
-            for use, module, stage, is_call, via in _stage_uses(src, t.module, t.binding.node, by_key, (step,)):
-                problems.append(f"{mod.at(node)}: {entry} reaches stage {stage!r} through "
-                                + ", then ".join(via) + f", at {module.at(use)}: {unseen}. Call the stage in "
-                                f"{entry}'s own body")
-                break
+            for body, label in _bodies(cst, t):
+                reached.setdefault(t.module.name, t.module)
+                step = f"{t.module.name}:{label} ({t.module.at(body)})"
+                for use, module, stage, is_call, via in _stage_uses(src, t.module, body, by_key, (step,),
+                                                                    reached=reached):
+                    problems.append(f"{mod.at(node)}: {entry} reaches stage {stage!r} through "
+                                    + ", then ".join(via) + f", at {module.at(use)}: {unseen}. Call the stage "
+                                    f"in {entry}'s own body")
+                    return
 
         def visit_Await(self, node):
             self.direct.add(id(node.expression))
@@ -673,12 +703,18 @@ def _find_refs(src: _Source, a: _Analysis, by_key: dict, problems: list[str]) ->
             return False
 
     fn.body.visit(Refs())
+    by_node = {id(t.binding.node): name for name, t in a.targets.items()}
+    for module in reached.values():
+        if module.name not in a.scanned:
+            a.scanned.add(module.name)
+            problems.extend(_decorator_problems(src, module, by_node))
 
 
 def _outputs(src: _Source, a: _Analysis, by_key_names: set[str]) -> set[str]:
     """Names in the entry function that hold a stage's return value, unchanged: every binding of
     them is `name = stage(...)` (or `name = await stage(...)`), and every use of them is as a
-    stage's argument or in `return`. Anything else might change the value in place
+    stage's argument, in `return`, or a read (a truth test, `not`, a comparison, or a builtin
+    such as `len` or `print`). Anything else might change the value in place
     (`passages.reverse()`, `passages[0] = ...`, `tidy(passages)`), and the SDK then records it as
     an in-memory input: it matches a stage's return value by identity, confirmed by digest."""
     cst, mod = src.cst, a.entry_module
@@ -697,8 +733,29 @@ def _outputs(src: _Source, a: _Analysis, by_key_names: set[str]) -> set[str]:
 
     class V(cst.CSTVisitor):
         def visit_Call(self, node):
-            if is_stage_call(node):
+            #: A builtin that only reads its argument (`len(passages)`, `print(passages)`) keeps
+            #: the value, as a stage's call does.
+            builtin = (isinstance(node.func, cst.Name) and node.func.value in _READS
+                       and src.resolve_expr(mod, node.func) is None)
+            if builtin or is_stage_call(node):
                 allowed.update(id(arg.value) for arg in node.args if not arg.star)
+
+        def visit_If(self, node):
+            allowed.add(id(node.test))
+
+        def visit_While(self, node):
+            allowed.add(id(node.test))
+
+        def visit_IfExp(self, node):
+            allowed.add(id(node.test))
+
+        def visit_UnaryOperation(self, node):
+            if isinstance(node.operator, cst.Not):
+                allowed.add(id(node.expression))
+
+        def visit_Comparison(self, node):
+            allowed.add(id(node.left))
+            allowed.update(id(c.comparator) for c in node.comparisons)
 
         def visit_Return(self, node):
             if node.value is not None:
