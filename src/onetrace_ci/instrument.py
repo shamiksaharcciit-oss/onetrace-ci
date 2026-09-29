@@ -54,10 +54,10 @@ from onetrace_ci.errors import format_refusal
 from onetrace_ci.instrument_plan import (FunctionRef, InstrumentPlan, PlanError, PlanRefused, SignSpec,
                                          Stage, load_instrument_plan)
 
-#: The gate action the generated workflow runs, pinned to a commit, never a branch: the commit
-#: whose plan reader refuses what two YAML readers would read differently, and whose own
-#: action pins its steps to commits.
-GATE_ACTION = "shamiksaharcciit-oss/onetrace-ci@fe9a3109bb44db35f39f877a40d5c1b725705a78"
+#: The gate action the generated workflow runs, pinned to a commit, never a branch: a commit of
+#: this branch's pushed history (so the remote has it), whose plan reader refuses what two YAML
+#: readers would read differently, and whose own action pins its steps to commits.
+GATE_ACTION = "shamiksaharcciit-oss/onetrace-ci@72abb90751149bd990e2c89c21954220e0fd5a53"
 CHECKOUT_ACTION = "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"          # v4.4.0
 SETUP_PYTHON_ACTION = "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"  # v5.6.0
 WORKFLOW_PATH = ".github/workflows/onetrace.yml"
