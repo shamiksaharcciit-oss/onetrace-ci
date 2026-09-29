@@ -8,8 +8,8 @@ project, see [docs/agents/ci.md](docs/agents/ci.md).
 <!-- not executed -->
 ```sh
 pip install --require-hashes -r requirements.lock
+pip install --require-hashes -r requirements-test.lock
 pip install --no-deps -e .
-pip install "pytest>=8"
 python -m pytest -q
 ```
 
