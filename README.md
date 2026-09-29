@@ -330,13 +330,20 @@ onetrace-ci discover --entry pipeline.main:run --entry pipeline.ingest:run -- py
 ```
 
 The plan is drafted for the first entry. The others are observed in the same
-command, and the draft gains a `corpus` question: which ingest run does the
-query read? The question carries what the fixtures showed. It says which of
-the first entry's stages read a file after another entry wrote it, matched
-by the file's path, and which read one only before it was written (a stale
-index, say). For a file git doesn't track, it names the nearest directory
-that holds a file git does track. Discovery never chooses the ingest run: a
-person answers with `from:` and `stages:`, or deletes the line. Until the
+command, and the draft gains a `corpus` block of three questions:
+
+- `from`: which ingest run does the query read?
+- `stages`: which stages record the link?
+- `index_stage`: which ingest stage's output is the chunk index? It has no
+  default, as in the SDK.
+
+Each question carries what the fixtures showed. It says which of the first
+entry's stages read a file after another entry wrote it, matched by the file's
+path, and which read one only before it was written (a stale index, say). For
+`index_stage`, it names the ingest's function that wrote the file, or says the
+file was written in the ingest entry itself. For a file git doesn't track, it
+names the nearest directory that holds a file git does track. Discovery never
+chooses: a person answers each question, or deletes the block. Until the
 next onetrace release, `instrument` refuses a plan with a `corpus` (see
 above). The report lists what each other entry called, read and wrote.
 Discovery refuses if the command never called one of the entries. The first

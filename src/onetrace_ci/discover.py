@@ -246,8 +246,16 @@ def render_draft(d: Discovery) -> str:
         if s.settings:
             lines.append(f"    config: {_q(decide('record these settings? observed ' + '; '.join(s.settings)))}")
     if d.corpus:
-        #: Discovery doesn't guess which ingest run a query reads: it says what it saw.
-        lines.append(f"corpus: {_q(decide('which ingest run does the query read? ' + '; '.join(d.corpus) + '. Answer with from: (a run folder or a manifest digest) and stages: (where the link is recorded), or delete this line for no link'))}")
+        #: Discovery doesn't guess which ingest run a query reads, where the link is recorded, or
+        #: which ingest stage's output is the chunk index: it says what it saw, field by field.
+        def joined(key):
+            return "; ".join(e[key] for e in d.corpus)
+        source_q = ("which ingest run does the query read? " + joined("from")
+                    + ". Answer with a run folder or a manifest digest, or delete the corpus block for no link")
+        stages_q = "which stages record the link? " + joined("stages")
+        index_q = "which ingest stage's output is the chunk index? " + joined("index")
+        lines += ["corpus:", f"  from: {_q(decide(source_q))}", f"  stages: {_q(decide(stages_q))}",
+                  f"  index_stage: {_q(decide(index_q))}"]
     boundary_q = ("approve these boundaries? " + " | ".join(d.boundaries)) if d.boundaries else \
         "are there boundaries to approve? none were seen"
     lines += [

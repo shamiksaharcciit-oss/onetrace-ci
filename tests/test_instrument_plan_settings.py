@@ -25,6 +25,13 @@ def test_settings_and_corpus_are_read_as_written(examined):
     assert retrieve.config == {"top_k": "1", "metric": "word-overlap"}   # as written; never numbers
     assert retrieve.constants == ("request",)
     assert (plan.corpus.source, plan.corpus.stages) == ("runs/ingest-latest", ("retrieve",))
+    assert plan.corpus.index_stage is None                              # no default
+
+
+def test_a_corpus_index_stage_is_read_as_written(examined):
+    plan = parse_instrument_plan(PLAN + CORPUS + "  index_stage: split\n", source="<t>")
+    examined(1, "the corpus link's index stage")
+    assert plan.corpus.index_stage == "split"
 
 
 REFUSALS = {
@@ -42,6 +49,10 @@ REFUSALS = {
     "a constants entry that is not a name": (
         _with(RETRIEVE_INSTRUMENT, RETRIEVE_INSTRUMENT + '    constants: ["top k"]\n'), "stages[1].constants", ""),
     "a corpus without from": (PLAN + "corpus:\n  stages: [retrieve]\n", "corpus.from", ""),
+    "an index_stage that is not a name": (PLAN + CORPUS + "  index_stage: [split]\n", "corpus.index_stage", ""),
+    "an unknown corpus field": (PLAN + CORPUS + "  index: split\n", "corpus.index", "index_stage"),
+    "an index_stage that names a function, not a stage": (
+        PLAN + CORPUS + "  index_stage: pipeline.ingest:write_index\n", "corpus.index_stage", "stage"),
     "several entries": (PLAN + "entries: [pipeline.main:run, pipeline.ingest:run]\n", "entries", ""),
 }
 
@@ -87,3 +98,33 @@ def test_stages_that_record_no_settings_are_named(tmp_path, examined, capsys):
     examined(len(lines), "lines naming stages without settings")
     assert lines == ["stages that record no settings (no config or constants in the plan): "
                      "'retrieve', 'answer'"]
+
+
+def test_each_open_corpus_question_is_named_once(examined):
+    """A drafted corpus block holds questions, not wrong values: each is refused as open, once."""
+    block = ('corpus:\n  from: "DECIDE: which ingest run?"\n  stages: "DECIDE: which stages?"\n'
+             '  index_stage: "DECIDE: which ingest stage?"\n')
+    with pytest.raises(PlanRefused) as caught:
+        parse_instrument_plan(PLAN + block, source="<t>")
+    about = [p for p in caught.value.problems if "corpus" in p]
+    examined(len(about), "problems about the corpus block")
+    assert len(about) == 3 and all("still an open question" in p for p in about), about
+
+
+def test_an_answered_corpus_field_is_checked_while_another_is_still_open(examined):
+    block = 'corpus:\n  from: runs/ingest-latest\n  stages: [nope]\n  index_stage: "DECIDE: which ingest stage?"\n'
+    with pytest.raises(PlanRefused) as caught:
+        parse_instrument_plan(PLAN + block, source="<t>")
+    about = [p for p in caught.value.problems if "corpus" in p]
+    examined(len(about), "problems about the corpus block")
+    assert any(p.startswith("plan field corpus.stages:") and "'nope'" in p for p in about), about
+    assert any(p.startswith("plan field corpus.index_stage:") and "open question" in p for p in about), about
+
+
+def test_an_open_question_inside_the_corpus_stages_list_is_named_once(examined):
+    block = 'corpus:\n  from: runs/ingest-latest\n  stages: ["DECIDE: which stages?"]\n'
+    with pytest.raises(PlanRefused) as caught:
+        parse_instrument_plan(PLAN + block, source="<t>")
+    about = [p for p in caught.value.problems if "corpus" in p]
+    examined(len(about), "problems about the corpus block")
+    assert len(about) == 1 and "open question" in about[0], about

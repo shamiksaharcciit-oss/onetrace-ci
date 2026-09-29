@@ -42,7 +42,8 @@ CODES: list[tuple[str, str, str]] = [
                       r"is not `module\.path:function`|names an earlier stage too|"
                       r"is not a stage declared before|is not a planned stage|only a stage without a function|"
                       r"cannot be recorded: the SDK refuses|the only placeholder|several entries|"
-                      r"give the same generated name|a stage without a function has no parameters",
+                      r"give the same generated name|a stage without a function has no parameters|"
+                      r"names a function; name the ingest stage",
      "Correct the named field: the message says which values it accepts."),
     ("class-method", r"names a class method",
      "Make the stage a module-level function (a method can call it), and name that function."),

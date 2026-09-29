@@ -178,7 +178,8 @@ def _own_attribute(obj, name):
         descriptor = _class_dict(klass).get("__dict__")
         if descriptor is not None:
             if type(descriptor) is not types.GetSetDescriptorType or not (
-                    descriptor.__doc__ == _INSTANCE_DICT_DOC or descriptor.__objclass__ in _PLAIN_DICT_TYPES):
+                    descriptor.__doc__ == _INSTANCE_DICT_DOC
+                    or any(descriptor.__objclass__ is known for known in _PLAIN_DICT_TYPES)):
                 return None
             try:
                 namespace = descriptor.__get__(obj, kind)

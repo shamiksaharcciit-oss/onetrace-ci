@@ -1332,10 +1332,13 @@ def test_a_query_that_reads_what_an_ingest_wrote_is_asked_which_ingest_run(tmp_p
     examined(2, "the draft and the report")
     assert rc == 0, err
     assert doc["entry"] == "pipeline.main:run"
-    assert doc["corpus"] == ("DECIDE: which ingest run does the query read? retrieve read 1 file that "
-                             "pipeline.ingest:run wrote (not tracked by git, under data/). Answer with from: "
-                             "(a run folder or a manifest digest) and stages: (where the link is recorded), "
-                             "or delete this line for no link")
+    assert doc["corpus"] == {
+        "from": "DECIDE: which ingest run does the query read? retrieve read 1 file at a path pipeline.ingest:run "
+                "wrote to (not tracked by git, under data/). Answer with a run folder or a manifest digest, or delete "
+                "the corpus block for no link",
+        "stages": "DECIDE: which stages record the link? retrieve read a file at a path pipeline.ingest:run wrote to",
+        "index_stage": "DECIDE: which ingest stage's output is the chunk index? retrieve read a file at a path "
+                       "pipeline.ingest:run wrote to itself, not in a function it calls"}
     other = section(report, "Other entries")
     assert "- `pipeline.ingest:run` ran once. It called pipeline.ingest:chunk. It read 1 file (`data/corpus.json`). " \
            "It wrote 1 file (not tracked by git, under data/), and retrieve read it afterwards." in other
@@ -1364,18 +1367,20 @@ def test_the_directory_named_for_a_file_another_entry_wrote_is_one_git_tracks_a_
     assert rc == 0, err
     for text in (draft, report, events):
         assert "data/index" not in text and "chunks" not in text
-    assert "under data/" in read_document(draft, source="draft")["corpus"]
+    assert "under data/" in read_document(draft, source="draft")["corpus"]["from"]
 
 
 def test_another_entry_that_wrote_nothing_the_query_read_is_still_asked_about(tmp_path, monkeypatch, capsys, examined):
     rc, draft, report, _, err = discover_in(
         tmp_path, monkeypatch, capsys, {"repo/pipeline/ingest.py": INGEST}, command=INGEST_THEN_QUERY, entries=BOTH)
     corpus = read_document(draft, source="draft")["corpus"]
-    examined(2, "the corpus question and the report")
+    examined(2, "the corpus questions and the report")
     assert rc == 0, err
-    assert corpus.startswith("DECIDE: which ingest run does the query read? no read of a file "
-                             "pipeline.ingest:run wrote was seen after the write (only reads through open() are "
-                             "observed, matched by path). ")
+    assert corpus["from"].startswith("DECIDE: which ingest run does the query read? no read of a file "
+                                     "pipeline.ingest:run wrote was seen after the write (only reads through open() "
+                                     "are observed, matched by path). ")
+    assert corpus["index_stage"] == ("DECIDE: which ingest stage's output is the chunk index? no read of a file "
+                                     "pipeline.ingest:run wrote was seen after the write, so nothing here points to one")
     assert ("It wrote 1 file (not tracked by git, under data/); no read of it was seen after the write in a run of "
             "`pipeline.main:run`.") in section(report, "Other entries")
 
@@ -1427,10 +1432,10 @@ def test_an_entry_run_inside_the_planned_entry_leaves_its_draft_as_it_would_be_a
     assert rc1 == 0 and rc2 == 0, err1 + err2
     assert [s.get("function") for s in stages_of(alone)] == \
         [None, "pipeline.ingest:run", "pipeline.retrieval:retrieve", "pipeline.llm:answer"]
-    corpus = [line for line in both.splitlines() if line.startswith("corpus:")]
-    assert [line for line in both.splitlines() if not line.startswith("corpus:")] == alone.splitlines()
+    block = corpus_block(both)
+    assert [line for line in both.splitlines() if line not in block] == alone.splitlines()
     assert "pipeline.ingest:run ran only inside runs of pipeline.main:run, where what it did is pipeline.main:run's own" \
-        in corpus[0]
+        in read_document(both, source="draft")["corpus"]["from"]
     assert ("- `pipeline.ingest:run` ran once, inside a run of `pipeline.main:run`, where what it did is recorded as "
             "that run's own.") in section(report, "Other entries")
 
@@ -1447,7 +1452,7 @@ def test_a_read_before_the_write_is_not_taken_for_a_read_of_what_was_written(tmp
     rc, draft, _, _, err = discover_in(
         tmp_path, monkeypatch, capsys, {"repo/pipeline/ingest.py": INGEST, "repo/pipeline/retrieval.py": QUERY_RETRIEVAL},
         command=query_then_ingest, entries=BOTH, before=stale)
-    corpus = read_document(draft, source="draft")["corpus"]
+    corpus = read_document(draft, source="draft")["corpus"]["from"]
     examined(1, "the corpus question")
     assert rc == 0, err
     assert "no read of a file pipeline.ingest:run wrote was seen after the write" in corpus
@@ -1477,10 +1482,10 @@ def test_a_read_in_another_thread_is_not_credited_to_the_entry_function(tmp_path
     rc, draft, _, _, err = discover_in(
         tmp_path, monkeypatch, capsys, {"repo/pipeline/ingest.py": INGEST, "repo/pipeline/retrieval.py": THREAD_RETRIEVAL},
         command=INGEST_THEN_QUERY, entries=BOTH)
-    corpus = read_document(draft, source="draft")["corpus"]
+    corpus = read_document(draft, source="draft")["corpus"]["from"]
     examined(1, "the corpus question")
     assert rc == 0, err
-    assert "code in another thread or task while run ran read 1 file that pipeline.ingest:run wrote" in corpus
+    assert "code in another thread or task while run ran read 1 file at a path pipeline.ingest:run wrote to" in corpus
     assert "run itself" not in corpus
 
 
@@ -1510,7 +1515,7 @@ def test_a_path_spelled_in_another_case_is_the_same_file(tmp_path, monkeypatch, 
         command=INGEST_THEN_QUERY, entries=BOTH)
     examined(1, "the corpus question")
     assert rc == 0, err
-    assert "retrieve read 1 file that pipeline.ingest:run wrote" in read_document(draft, source="draft")["corpus"]
+    assert "retrieve read 1 file at a path pipeline.ingest:run wrote to" in read_document(draft, source="draft")["corpus"]["from"]
 
 
 INGEST_CALLING_QUERY = INGEST.replace("import json\n", "import json\n\nfrom pipeline.main import run as query\n", 1) + \
@@ -1525,7 +1530,7 @@ def test_another_entry_s_call_to_the_planned_entry_is_listed_among_its_calls(tmp
     examined(2, "the report's line for the ingest, and the corpus question")
     assert rc == 0, err
     assert "It called pipeline.ingest:chunk and pipeline.main:run." in section(report, "Other entries")
-    assert "retrieve read 1 file that pipeline.ingest:run wrote" in read_document(draft, source="draft")["corpus"]
+    assert "retrieve read 1 file at a path pipeline.ingest:run wrote to" in read_document(draft, source="draft")["corpus"]["from"]
 
 
 def test_a_read_in_another_process_after_the_write_is_joined(tmp_path, monkeypatch, capsys, examined):
@@ -1539,7 +1544,7 @@ def test_a_read_in_another_process_after_the_write_is_joined(tmp_path, monkeypat
         command=ingest_then_child, entries=BOTH)
     examined(1, "the corpus question")
     assert rc == 0, err
-    assert "retrieve read 1 file that pipeline.ingest:run wrote" in read_document(draft, source="draft")["corpus"]
+    assert "retrieve read 1 file at a path pipeline.ingest:run wrote to" in read_document(draft, source="draft")["corpus"]["from"]
 
 
 def test_the_events_carry_times_from_the_discovery_s_start_not_the_date(tmp_path, monkeypatch, capsys, examined):
@@ -1609,3 +1614,124 @@ def test_a_stage_behind_functools_lru_cache_is_named(tmp_path, monkeypatch, caps
     functions = [s.get("function") for s in stages_of(draft) or []]
     examined(len(functions), "drafted stages")
     assert functions == [None, "pipeline.retrieval:retrieve", "pipeline.llm:answer"]
+
+
+def corpus_block(draft):
+    """The draft's corpus block: its `corpus:` line and the indented lines under it."""
+    lines, block, inside = draft.splitlines(), [], False
+    for line in lines:
+        if line.startswith("corpus:"):
+            inside = True
+        elif inside and not line.startswith("  "):
+            inside = False
+        if inside:
+            block.append(line)
+    return block
+
+
+INGEST_WITH_A_WRITER = """\
+import json
+from pathlib import Path
+
+INDEX = Path(__file__).resolve().parents[1] / "data" / "index"
+
+
+def chunk(corpus):
+    return [{"id": d["id"], "text": d["text"]} for d in corpus]
+
+
+def write_index(chunks):
+    INDEX.mkdir(exist_ok=True)
+    (INDEX / "chunks.json").write_text(json.dumps(chunks), encoding="utf-8")
+
+
+def run():
+    corpus = json.loads((INDEX.parent / "corpus.json").read_text(encoding="utf-8"))
+    write_index(chunk(corpus))
+"""
+
+
+def test_the_index_stage_question_names_the_ingest_function_that_wrote_what_the_query_read(
+        tmp_path, monkeypatch, capsys, examined):
+    rc, draft, _, _, err = discover_in(
+        tmp_path, monkeypatch, capsys,
+        {"repo/pipeline/ingest.py": INGEST_WITH_A_WRITER, "repo/pipeline/retrieval.py": QUERY_RETRIEVAL},
+        command=INGEST_THEN_QUERY, entries=BOTH)
+    assert rc == 0, err
+    corpus = read_document(draft, source="draft")["corpus"]
+    examined(1, "the index_stage question")
+    assert corpus["index_stage"] == ("DECIDE: which ingest stage's output is the chunk index? retrieve read a file at "
+                                     "a path pipeline.ingest:write_index wrote to, which pipeline.ingest:run calls "
+                                     "(as a stage, discovery would suggest the name 'write index')")
+
+
+def test_a_two_entry_draft_is_refused_only_for_its_open_questions(tmp_path, monkeypatch, capsys, examined):
+    rc, draft, _, _, err = discover_in(
+        tmp_path, monkeypatch, capsys,
+        {"repo/pipeline/ingest.py": INGEST_WITH_A_WRITER, "repo/pipeline/retrieval.py": QUERY_RETRIEVAL},
+        command=INGEST_THEN_QUERY, entries=BOTH)
+    assert rc == 0, err
+    refusals = non_decide_refusals(draft)
+    examined(1, "the draft's refusals other than its open questions")
+    assert refusals == []
+
+
+def _index_question(tmp_path, monkeypatch, capsys, ingest):
+    rc, draft, _, _, err = discover_in(
+        tmp_path, monkeypatch, capsys, {"repo/pipeline/ingest.py": ingest, "repo/pipeline/retrieval.py": QUERY_RETRIEVAL},
+        command=INGEST_THEN_QUERY, entries=BOTH)
+    assert rc == 0, err
+    return read_document(draft, source="draft")["corpus"]["index_stage"]
+
+
+def test_an_index_written_in_another_thread_is_not_credited_to_the_ingest_itself(tmp_path, monkeypatch, capsys, examined):
+    ingest = INGEST.replace(
+        '    (INDEX / "chunks.json").write_text(json.dumps(chunk(corpus)), encoding="utf-8")\n',
+        '    import threading\n'
+        '    writer = threading.Thread(target=lambda: (INDEX / "chunks.json").write_text(json.dumps(chunk(corpus)), encoding="utf-8"))\n'
+        '    writer.start()\n    writer.join()\n')
+    question = _index_question(tmp_path, monkeypatch, capsys, ingest)
+    examined(1, "the index_stage question")
+    assert "code in another thread or task while pipeline.ingest:run ran" in question, question
+    assert "itself" not in question
+
+
+def test_an_index_written_in_a_nested_function_names_that_function(tmp_path, monkeypatch, capsys, examined):
+    ingest = INGEST.replace(
+        '    (INDEX / "chunks.json").write_text(json.dumps(chunk(corpus)), encoding="utf-8")\n',
+        '    def save(chunks):\n'
+        '        (INDEX / "chunks.json").write_text(json.dumps(chunks), encoding="utf-8")\n'
+        '    save(chunk(corpus))\n')
+    question = _index_question(tmp_path, monkeypatch, capsys, ingest)
+    examined(1, "the index_stage question")
+    assert "pipeline.ingest:run.<locals>.save" in question, question
+    assert "not in a function it calls" not in question
+
+
+def test_the_index_question_names_the_last_writer_before_the_read(tmp_path, monkeypatch, capsys, examined):
+    ingest = INGEST_WITH_A_WRITER.replace("    write_index(chunk(corpus))\n", """    write_index([])
+    rewrite_index(chunk(corpus))
+
+
+def rewrite_index(chunks):
+    (INDEX / "chunks.json").write_text(json.dumps(chunks), encoding="utf-8")
+""")
+    question = _index_question(tmp_path, monkeypatch, capsys, ingest)
+    examined(1, "the index_stage question")
+    assert "pipeline.ingest:rewrite_index" in question and "pipeline.ingest:write_index" not in question, question
+
+
+def test_an_ingest_that_also_ran_inside_the_query_says_those_runs_are_not_considered(
+        tmp_path, monkeypatch, capsys, examined):
+    """The ingest runs on its own, then again inside the query's run, where what it writes is the
+    query's own: the evidence says so, since the latest write before the read may be that one."""
+    ingest_then_nested = [sys.executable, "-c", "from pipeline.ingest import run as ingest; "
+                          f"from pipeline.main import run; ingest(); run({REQUEST!r})"]
+    rc, draft, _, _, err = discover_in(
+        tmp_path, monkeypatch, capsys, {"repo/pipeline/main.py": NESTED_MAIN, "repo/pipeline/ingest.py": INGEST,
+                                        "repo/pipeline/retrieval.py": QUERY_RETRIEVAL},
+        command=ingest_then_nested, entries=BOTH)
+    assert rc == 0, err
+    source = read_document(draft, source="draft")["corpus"]["from"]
+    examined(1, "the corpus question")
+    assert "1 of its 2 runs was inside a run of pipeline.main:run and is not considered here" in source, source

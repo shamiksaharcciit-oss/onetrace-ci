@@ -52,6 +52,7 @@ _MODULE_RE = re.compile(rf"{_IDENT}(?:\.{_IDENT})*")
 _STAGE_KEYS = frozenset({"name", "function", "memory_inputs", "trust", "rederivable",
                          "rederivable_note", "instrument", "inputs", "files", "config", "constants"})
 _DOTTED_RE = re.compile(rf"{_IDENT}(?:\.{_IDENT})*")
+_FUNCTION_RE = re.compile(rf"{_IDENT}(?:\.{_IDENT})*:{_IDENT}(?:\.{_IDENT})*")
 _INSTRUMENT_KEYS = frozenset({"name", "package", "kind"})
 _CI_KEYS = frozenset({"install", "run", "baseline"})
 _GLOB_CHARS = set("*?[]")
@@ -103,6 +104,9 @@ class Stage:
 class CorpusSpec:
     source: str
     stages: tuple[str, ...]
+    #: The ingest stage whose output is the chunk index (the SDK's `corpus_from(..., index_stage=)`).
+    #: No default: None when the plan names none.
+    index_stage: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +157,11 @@ class _Problems:
 
     def add(self, field: str, why: str):
         self.items.append(f"plan field {field}: {why}")
+
+
+def _open(value) -> bool:
+    """A `DECIDE:` question a person has not answered yet."""
+    return isinstance(value, str) and value.lstrip().startswith("DECIDE:")
 
 
 def _find_decides(value, path: str, problems: _Problems):
@@ -449,22 +458,39 @@ def parse_instrument_plan(text: str, *, source: str) -> InstrumentPlan:
 
     corpus = None
     raw_corpus = values.get("corpus")
-    if raw_corpus is not None and not (isinstance(raw_corpus, str) and raw_corpus.lstrip().startswith("DECIDE:")):
+    if raw_corpus is not None and not _open(raw_corpus):
         if not isinstance(raw_corpus, dict):
-            problems.add("corpus", f"must be a mapping {{from, stages}}, got {raw_corpus!r}")
+            problems.add("corpus", f"must be a mapping {{from, stages, index_stage}}, got {raw_corpus!r}")
         else:
-            for key in sorted(set(raw_corpus) - {"from", "stages"}):
-                problems.add(f"corpus.{key}", "not a corpus field (the fields are from and stages)")
-            source_ = _text(raw_corpus, "from", "corpus.from", problems, required=True)
-            linked = _names(raw_corpus, "stages", "corpus.stages", problems)
-            if not linked:
-                problems.add("corpus.stages", "missing; a person names the stages the link is recorded on")
-            planned = {s.name for s in stages}
-            for s in linked:
-                if s not in planned:
-                    problems.add("corpus.stages", f"{s!r} is not a planned stage")
+            #: Each answered field is checked; one still holding a `DECIDE:` question is named
+            #: once, as an open question, and not also as a wrong value.
+            for key in sorted(set(raw_corpus) - {"from", "stages", "index_stage"}):
+                problems.add(f"corpus.{key}", "not a corpus field (the fields are from, stages and index_stage)")
+            source_ = None
+            if not _open(raw_corpus.get("from")):
+                source_ = _text(raw_corpus, "from", "corpus.from", problems, required=True)
+            linked: tuple[str, ...] = ()
+            raw_linked = raw_corpus.get("stages")
+            if not (_open(raw_linked) or (isinstance(raw_linked, list) and any(_open(s) for s in raw_linked))):
+                linked = _names(raw_corpus, "stages", "corpus.stages", problems)
+                if not linked:
+                    problems.add("corpus.stages", "missing; a person names the stages the link is recorded on")
+                planned = {s.name for s in stages}
+                for s in linked:
+                    if s not in planned:
+                        problems.add("corpus.stages", f"{s!r} is not a planned stage")
+            #: No default, as in the SDK: without it, the link is recorded bare. It names a stage of
+            #: the ingest run, which this plan does not plan (a plan has one entry), so it is not
+            #: checked against this plan's stages; a function's `module:name` is not a stage name.
+            index_stage = None
+            if not _open(raw_corpus.get("index_stage")):
+                index_stage = _text(raw_corpus, "index_stage", "corpus.index_stage", problems, required=False)
+                if index_stage is not None and _FUNCTION_RE.fullmatch(index_stage):
+                    problems.add("corpus.index_stage", f"{index_stage!r} names a function; name the ingest stage "
+                                                       f"(its name in the ingest's plan) whose output is the chunk index")
+                    index_stage = None
             if source_ and linked:
-                corpus = CorpusSpec(source_, linked)
+                corpus = CorpusSpec(source_, linked, index_stage)
     if "entries" in values:
         problems.add("entries", "several entries (one run type each) are generated as decorators, "
                                 "which this build has not yet been checked against (onetrace 0.2.0); "

@@ -56,7 +56,8 @@ class Discovery:
     processes: int = 0            # the Python processes observed
     locked: dict = field(default_factory=dict)   # normalized distribution name -> (version, lock file)
     others: list[str] = field(default_factory=list)   # what each other entry did, for the report
-    corpus: list[str] = field(default_factory=list)   # the corpus question's evidence, one per other entry
+    #: The corpus questions' evidence, one {"from", "stages", "index"} per other entry.
+    corpus: list[dict] = field(default_factory=list)
 
 
 _PIN = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*==\s*([^\s;\\#]+)")
@@ -364,6 +365,26 @@ def _files(written: dict) -> tuple[str, str]:
     return f"{len(events)} file{'' if len(events) == 1 else 's'}", "(" + "; ".join(parts) + ")"
 
 
+def _writer(write: dict) -> tuple:
+    """Where a write was made, as far as the events say: the stage (a function the entry calls),
+    another thread or task, or a function the entry passes through; else the entry itself."""
+    return (write.get("stage"), write.get("in_run") == "elsewhere", write.get("inside"))
+
+
+def _written_by(readers: list[str], writer: tuple, other: str) -> str:
+    stage, elsewhere, inside = writer
+    if stage:
+        return (f"{_list(readers)} read a file at a path {stage} wrote to, which {other} calls "
+                f"(as a stage, discovery would suggest the name {_suggest(stage)!r})")
+    if elsewhere:
+        return (f"{_list(readers)} read a file at a path written to by code in another thread or task "
+                f"while {other} ran")
+    if inside:
+        return (f"{_list(readers)} read a file at a path {inside} wrote to (a function {other} passes "
+                f"through, not a stage)")
+    return f"{_list(readers)} read a file at a path {other} wrote to itself, not in a function it calls"
+
+
 def _other_entries(entry: str, others: list[str], events: list[dict], stages: dict) -> tuple[list[str], list[str]]:
     """For each entry other than the planned one (an ingest run, say): what it did, for the
     report, and whether a run of the planned entry read a file after the other wrote it, for the
@@ -399,23 +420,35 @@ def _other_entries(entry: str, others: list[str], events: list[dict], stages: di
         runs = [e for e in own if e["kind"] == "entry"]
         nested = sum(1 for e in runs if e.get("within_first"))
         called = list(dict.fromkeys(e["function"] for e in own if e["kind"] == "call"))
-        read, written = {}, {}
+        read, written, writes = {}, {}, {}
         for e in own:
             if e["kind"] == "file-read" and e.get("path"):
                 read.setdefault(e["path"], e)
             elif e["kind"] == "file-write" and e.get("path"):
-                written.setdefault(e["path"], e)            # its first write
-        joined, stale, who, who_stale = {}, {}, [], []
-        for path, write in written.items():
-            seen = reads.get(path, [])
-            later = [w for r, w in seen if after(r, write)]
-            earlier = [w for r, w in seen if not after(r, write)]
-            if later:
-                joined[path] = write
-                who += later
-            elif earlier:
-                stale[path] = write
-                who_stale += earlier
+                written.setdefault(e["path"], e)            # its first write, for the report
+                writes.setdefault(e["path"], []).append(e)
+        #: Each read is joined to the latest of the other entry's writes before it: the one whose
+        #: file was there to be read. A read with none before it, but one after, read a stale file.
+        joined, stale, who, stale_readers, by_writer = {}, {}, [], {}, {}
+        for path, path_writes in writes.items():
+            for r, w in reads.get(path, []):
+                before = [x for x in path_writes if after(r, x)]
+                if before:
+                    latest = before[0]
+                    for x in before[1:]:
+                        if after(x, latest):
+                            latest = x
+                    joined.setdefault(path, latest)
+                    who.append(w)
+                    readers_of = by_writer.setdefault(_writer(latest), [])
+                    if w not in readers_of:
+                        readers_of.append(w)
+                else:
+                    stale.setdefault(path, path_writes[0])
+                    stale_readers.setdefault(path, []).append(w)
+        stale = {p: x for p, x in stale.items() if p not in joined}
+        #: Only the readers of a path read nowhere after the write are said to have read it stale.
+        who_stale = [w for p in stale for w in stale_readers[p]]
         who, who_stale = list(dict.fromkeys(who)), list(dict.fromkeys(who_stale))
 
         times = "once" if len(runs) == 1 else f"{len(runs)} times"
@@ -423,11 +456,19 @@ def _other_entries(entry: str, others: list[str], events: list[dict], stages: di
             line = (f"`{other}` ran {times}, inside a run of `{entry}`, where what it did is recorded as that "
                     f"run's own.")
             lines.append(line)
-            evidence.append(f"{other} ran only inside runs of {entry}, where what it did is {entry}'s own")
+            inside = f"{other} ran only inside runs of {entry}"
+            evidence.append({"from": f"{inside}, where what it did is {entry}'s own",
+                             "stages": f"{inside}, so nothing here points to one",
+                             "index": f"{inside}, so nothing here points to one"})
             continue
         line = f"`{other}` ran {times}"
         line += (f", {nested} of them inside a run of `{entry}`, where what it did is recorded as that run's "
                  f"own. " if nested else ". ")
+        #: What a run inside the planned entry's did is the planned entry's own, so a read may have
+        #: followed one of its writes; the evidence says those runs are left out.
+        left_out = (f" ({nested} of its {len(runs)} runs {'was' if nested == 1 else 'were'} inside "
+                    f"{'a run' if nested == 1 else 'runs'} of {entry} and "
+                    f"{'is' if nested == 1 else 'are'} not considered here)") if nested else ""
         line += f"It called {_list(called)}. " if called else "It called no function of the repository directly. "
         if read:
             count, detail = _files(read)
@@ -445,7 +486,8 @@ def _other_entries(entry: str, others: list[str], events: list[dict], stages: di
         lines.append(line.rstrip())
         if joined:
             count, detail = _files(joined)
-            said = f"{_list(who)} read {count} that {other} wrote {detail}"
+            where = "a path" if len(joined) == 1 else "paths"
+            said = f"{_list(who)} read {count} at {where} {other} wrote to {detail}"
         else:
             said = (f"no read of a file {other} wrote was seen after the write (only reads through open() are "
                     f"observed, matched by path)")
@@ -453,7 +495,17 @@ def _other_entries(entry: str, others: list[str], events: list[dict], stages: di
             count, detail = _files(stale)
             where = "a path" if len(stale) == 1 else "paths"
             said += f"; {_list(who_stale)} read {count} at {where} {other} later wrote to {detail}, before it wrote there"
-        evidence.append(said)
+        who = list(dict.fromkeys(who))
+        if joined:
+            #: Only paths are matched: a stage read a file at a path the other entry wrote to.
+            stages_said = f"{_list(who)} read a file at a path {other} wrote to"
+            #: Which of the ingest's functions wrote what was read: the candidates for the chunk
+            #: index, each the latest write before a read.
+            index_said = "; ".join(_written_by(readers_of, writer, other) for writer, readers_of in by_writer.items())
+        else:
+            stages_said = f"no stage was seen reading a file {other} wrote, after the write"
+            index_said = f"no read of a file {other} wrote was seen after the write, so nothing here points to one"
+        evidence.append({"from": said + left_out, "stages": stages_said, "index": index_said})
     return lines, evidence
 
 
