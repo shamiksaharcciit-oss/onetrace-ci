@@ -5,7 +5,7 @@ diff --git a/pipeline/main.py b/pipeline/main.py
  from pipeline.retrieval import retrieve
  
  
-+# onetrace-ci instrument: generated from the plan (sha256:53d999d778ff7eaa).
++# onetrace-ci instrument: generated from the plan (sha256:297e4184af31f424).
 +# Change the plan and run `onetrace-ci instrument` again, rather than editing this by hand.
 +import hashlib as _onetrace_hashlib
 +import importlib.metadata as _onetrace_metadata
@@ -154,7 +154,7 @@ new file mode 100644
 +        run: |
 +          python -c "from pipeline.main import run; run('what does the warranty cover')"
 +      - name: onetrace-ci gate
-+        uses: shamiksaharcciit-oss/onetrace-ci@72abb90751149bd990e2c89c21954220e0fd5a53
++        uses: shamiksaharcciit-oss/onetrace-ci@000728365a17953fa4ac9a044f9d41a4d24a14f1
 +        with:
 +          run: "runs/onetrace-ci-candidate"
 +          baseline: "runs/baseline"
