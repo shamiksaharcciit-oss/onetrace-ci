@@ -1,8 +1,8 @@
 # onetrace-ci's own tests, on every Python it supports. Everything installed is pinned by hash:
 # the runtime dependencies from requirements.lock, and pytest from requirements-test.lock.
-# The test-only dependencies of the framework integrations (LangChain, LlamaIndex,
-# OpenTelemetry) will run in a job of their own once those integrations exist; this job needs
-# none of them.
+# The frameworks discover takes in (LangChain, LlamaIndex, OpenTelemetry) are test-only
+# dependencies, from requirements-integrations.lock, and only the integrations job installs
+# them; in the tests job their tests skip.
 name: tests
 
 on:
@@ -33,3 +33,25 @@ jobs:
           pip install --no-deps -e .
       - name: Tests
         run: python -m pytest -q -p no:cacheprovider
+
+  integrations:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install, pinned by hash, with the frameworks
+        run: |
+          pip install --require-hashes -r requirements.lock
+          pip install --require-hashes -r requirements-test.lock
+          pip install --require-hashes -r requirements-integrations.lock
+          pip install --no-deps -e .
+      - name: The framework integrations
+        env:
+          ONETRACE_CI_REQUIRE_INTEGRATIONS: "1"     # a framework that is missing fails, never skips
+        run: python -m pytest -q -p no:cacheprovider tests/test_discover_integrations.py

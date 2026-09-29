@@ -14,6 +14,12 @@ and `anthropic`, which use httpx, named when their frames are on the stack), exc
 type, never the message), the calls the entry function makes (with fingerprints of their
 arguments and return values), and which lines ran.
 
+In the frameworks a program uses, once it has imported them itself: LangChain's runs (through
+its callbacks), LlamaIndex's spans (through its instrumentation) and OpenTelemetry spans (through
+a span processor added to each tracer provider). A LangChain run or LlamaIndex span the user's
+code starts is an event, with its inputs and output fingerprinted, and those it starts in turn
+are counted on it; each OpenTelemetry span is an event, with its attributes fingerprinted.
+
 Every event names where it happened, the stage it belongs to (the function the entry function
 called, on the stack at that moment), and whether it happened during a run of the entry: in the
 entry's own calls, or in another thread or task while the entry was running.
@@ -504,6 +510,9 @@ def _written(frame, found):
     reached_user = False
     while frame is not None:
         filename = frame.f_code.co_filename
+        if filename and _normalized(filename) == _SELF:
+            frame = frame.f_back            # the observer's own frames: its strings are not the program's
+            continue
         user = _is_user(filename)
         if (user or not reached_user) and filename and not filename.startswith("<") and found(_strings(filename)):
             return True
@@ -870,22 +879,429 @@ def _patch_httpx(mod):
         cls.send = send
 
 
-_PATCHES = {"requests": _patch_requests, "httpx": _patch_httpx}
+# ------------------------------------------------------------------ frameworks
+
+_STREAMS = (types.GeneratorType, types.AsyncGeneratorType, types.CoroutineType)
+_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_tapped = set()
+
+
+def _stream(value):
+    """A value that reading consumes (a generator, an iterator): never read here."""
+    return isinstance(value, _STREAMS) or hasattr(type(value), "__next__") or hasattr(type(value), "__anext__")
+
+
+def _framework_default(o):
+    """A framework's own objects, fingerprinted by their declared fields (a pydantic model's, a
+    dataclass's), read one by one, never through the library's own serializer, which could read
+    a stream held in one; a stream itself is never read."""
+    if _stream(o):
+        raise TypeError("stream")
+    fields = getattr(type(o), "model_fields", None)
+    if isinstance(fields, dict):
+        return {"$type": type(o).__name__, **{k: getattr(o, k, None) for k in fields}}
+    import dataclasses
+    if dataclasses.is_dataclass(o) and not isinstance(o, type):
+        return {"$type": type(o).__name__, **{f.name: getattr(o, f.name, None) for f in dataclasses.fields(o)}}
+    return _default(o)
+
+
+def _fp_framework(value):
+    """Like `_fp_value`, for what a framework passes and returns."""
+    if value is None:
+        return "none"
+    if _stream(value):
+        return "unrecorded:stream"
+    try:
+        data = json.dumps(value, sort_keys=True, default=_framework_default, ensure_ascii=False).encode("utf-8")
+    except Exception:
+        return "unrecorded:" + type(value).__name__
+    return _fp(data)
+
+
+def _framework_start(kind, frame, fields):
+    """The event for a framework's run or span that code running in `frame` started, appended
+    now and completed when it ends; None when no user code is on the stack. Called busy."""
+    found = _where(frame)
+    if found is None:
+        return None
+    site, stage, in_run, _, inside, entry = found
+    event = _tagged({"kind": kind, **fields, "site": "%s:%d" % site, "stage": stage, "in_run": in_run}, entry)
+    if inside is not None:
+        event["inside"] = inside
+    with _lock:
+        _events.append(event)
+    return event
+
+
+class _Runs:
+    """The runs or spans a framework reports by id. One the user's code starts is an event; one
+    it starts in turn is counted on that event, by what it is."""
+
+    def __init__(self):
+        self.top = {}                   # id -> the event of the run it belongs to
+        self.own = {}                   # id -> its event, for a run that has one
+
+    def start(self, run_id, parent_id, make_event, label):
+        with _lock:
+            top = self.top.get(parent_id) if parent_id is not None else None
+            if top is not None:
+                top["inner"][label] = top["inner"].get(label, 0) + 1
+                self.top[run_id] = top
+                return
+        event = make_event()
+        if event is not None:
+            with _lock:
+                event["inner"] = {}
+                self.top[run_id] = event
+                self.own[run_id] = event
+
+    def end(self, run_id, returned=None, error=None, inputs=None):
+        """`inputs`: the run's input, when the framework gives it only now (a streamed LangChain
+        run starts with a placeholder)."""
+        with _lock:
+            self.top.pop(run_id, None)
+            event = self.own.pop(run_id, None)
+        if event is None:
+            return
+        done = {"returned": _fp_framework(returned), "outcome": "ok"} if error is None else \
+            {"outcome": "raised " + type(error).__name__}
+        if inputs is not None:
+            done["inputs"] = _fp_framework(inputs)
+        with _lock:
+            event.update(done)
+
+
+def _is_package_file(filename):
+    return isinstance(filename, str) and bool(filename) and _third_party(os.path.abspath(filename)) is not None
+
+
+def _module_dict(module):
+    """A module's own namespace, read without running any of its code: plain attribute access
+    would load a lazily imported module, or run a module's `__getattr__` (which may import)."""
+    try:
+        namespace = object.__getattribute__(module, "__dict__")
+    except Exception:
+        return {}
+    return namespace if isinstance(namespace, dict) else {}
+
+
+def _library_class(cls):
+    """Whether a class is defined in an installed package, so that its name may be written."""
+    module = sys.modules.get(str(type.__getattribute__(cls, "__module__")), None)
+    return _is_package_file(_module_dict(module).get("__file__"))
+
+
+def _exception_class(name):
+    """Whether `name` names an exception class the program has loaded. A span event can state any
+    type it likes; only the name of a real exception class is written. A value's own type is
+    asked, never the value (a proxy object would run code to answer)."""
+    if not _WORD.fullmatch(name):
+        return False
+
+    def namespaces():
+        yield vars(builtins)                    # most exceptions are there: no module is scanned
+        for _, module in list(sys.modules.items()):
+            yield _module_dict(module)
+
+    for namespace in namespaces():
+        cls = namespace.get(name)
+        if issubclass(type(cls), type) and issubclass(cls, BaseException):
+            return True
+    return False
+
+
+def _in_event_loop():
+    """Whether an asyncio event loop is running in this thread (asyncio is never imported here)."""
+    asyncio = sys.modules.get("asyncio")
+    try:
+        return asyncio is not None and asyncio._get_running_loop() is not None
+    except Exception:
+        return False
+
+
+_lc_names = {}
+
+
+def _langchain_name(name):
+    """A LangChain component's name, only when it names a class of an installed LangChain
+    package: a run's name is whatever the program set, and may hold a value."""
+    if not isinstance(name, str) or not _WORD.fullmatch(name):
+        return None
+    known = _lc_names.get(name)
+    if known is not None and known[1] == len(sys.modules):
+        return known[0]
+    found = None
+    for key, module in list(sys.modules.items()):
+        if not str(key).startswith("langchain"):
+            continue
+        cls = _module_dict(module).get(name)
+        if (isinstance(cls, type) and str(type.__getattribute__(cls, "__module__")).startswith("langchain")
+                and _library_class(cls)):
+            found = name
+            break
+    _lc_names[name] = (found, len(sys.modules))
+    return found
+
+
+def _tap_langchain(context_module):
+    """LangChain: a callback handler every callback manager adds, through the configure hook
+    LangChain offers for tracers. It runs inline, so it sees the code that started each run."""
+    if "langchain" in _tapped:
+        return
+    from contextvars import ContextVar
+    base = sys.modules["langchain_core.callbacks.base"].BaseCallbackHandler
+    with _Busy():
+        version = _version("langchain-core")
+    runs = _Runs()
+
+    def start(what, serialized, run_id, parent_run_id, kwargs, value):
+        if _busy():
+            return
+        try:
+            with _Busy():
+                name = kwargs.get("name") or ((serialized or {}).get("id") or [None])[-1]
+                component = _langchain_name(name)
+                frame = sys._getframe()
+                runs.start(run_id, parent_run_id, lambda: _framework_start("framework", frame, dict(
+                    library="langchain-core", version=version, what=what, component=component,
+                    inputs=_fp_framework(value))), f"{what} {component}" if component else what)
+        except Exception as e:
+            _failed("langchain", e)
+
+    def end(run_id, returned=None, error=None, inputs=None):
+        if _busy():
+            return
+        try:
+            with _Busy():
+                runs.end(run_id, returned, error, inputs)
+        except Exception as e:
+            _failed("langchain", e)
+
+    class _Tap(base):
+        #: Never inline: when any handler is, LangChain sends an async run's `on_llm_start` to the
+        #: inline ones only, and the program's own handlers would miss it. Not inline, the tap is
+        #: called in the thread of the code that ran a synchronous run, and off the event loop,
+        #: in a worker thread, for an asynchronous one, which it therefore doesn't see.
+        run_inline = False
+        raise_error = False
+
+        #: And never called from async code at all: LangChain sends a handler that is not inline
+        #: to the default thread pool, which the program may need (its only worker waiting on the
+        #: very run). While an event loop runs in the thread, the tap asks to be skipped.
+        @property
+        def ignore_llm(self):
+            return _in_event_loop()
+
+        ignore_chain = ignore_agent = ignore_retriever = ignore_chat_model = ignore_retry = \
+            ignore_custom_event = ignore_llm
+
+        def on_chain_start(self, serialized, inputs, *, run_id, parent_run_id=None, **kw):
+            start("chain", serialized, run_id, parent_run_id, kw, inputs)
+
+        def on_chat_model_start(self, serialized, messages, *, run_id, parent_run_id=None, **kw):
+            start("chat model", serialized, run_id, parent_run_id, kw, messages)
+
+        def on_llm_start(self, serialized, prompts, *, run_id, parent_run_id=None, **kw):
+            start("llm", serialized, run_id, parent_run_id, kw, prompts)
+
+        def on_retriever_start(self, serialized, query, *, run_id, parent_run_id=None, **kw):
+            start("retriever", serialized, run_id, parent_run_id, kw, query)
+
+        def on_tool_start(self, serialized, input_str, *, run_id, parent_run_id=None, **kw):
+            start("tool", serialized, run_id, parent_run_id, kw, kw.get("inputs", input_str))
+
+        def on_chain_end(self, outputs, *, run_id, **kw):
+            end(run_id, outputs, inputs=kw.get("inputs"))
+
+        def on_llm_end(self, response, *, run_id, **kw):
+            end(run_id, response)
+
+        def on_retriever_end(self, documents, *, run_id, **kw):
+            end(run_id, documents)
+
+        def on_tool_end(self, output, *, run_id, **kw):
+            end(run_id, output)
+
+        def on_chain_error(self, error, *, run_id, **kw):
+            end(run_id, error=error)
+
+        def on_llm_error(self, error, *, run_id, **kw):
+            end(run_id, error=error)
+
+        def on_retriever_error(self, error, *, run_id, **kw):
+            end(run_id, error=error)
+
+        def on_tool_error(self, error, *, run_id, **kw):
+            end(run_id, error=error)
+
+    context_module.register_configure_hook(ContextVar("onetrace_ci_discover", default=_Tap()), True)
+    _tapped.add("langchain")
+
+
+_SPAN_ID = re.compile(r"^(.*)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def _tap_llamaindex(module):
+    """LlamaIndex: a span handler on the root dispatcher, which every dispatcher passes its
+    spans up to. It keeps its own state, and hands LlamaIndex no span to keep."""
+    if "llamaindex" in _tapped:
+        return
+    handlers = sys.modules.get(module.__name__ + ".span_handlers")
+    if handlers is None or not hasattr(module, "get_dispatcher"):
+        return
+    with _Busy():
+        version = _version("llama-index-core")
+    runs = _Runs()
+
+    class _Spans(handlers.BaseSpanHandler):
+        @classmethod
+        def class_name(cls):
+            return "OnetraceCiDiscover"
+
+        def new_span(self, id_, bound_args, instance=None, parent_span_id=None, tags=None, **kw):
+            if _busy():
+                return None
+            try:
+                with _Busy():
+                    component = type(instance).__name__ if instance is not None and _library_class(type(instance)) else None
+                    #: The method is named only with a LlamaIndex class: a span on the program's
+                    #: own code carries a name the program chose, and may have made from a value.
+                    matched = _SPAN_ID.match(str(id_))
+                    method = (matched.group(1) if matched else str(id_)).rpartition(".")[2]
+                    method = method if component and _WORD.fullmatch(method) else None
+                    arguments = {k: v for k, v in bound_args.arguments.items() if k != "self"}
+                    frame = sys._getframe()
+                    runs.start(id_, parent_span_id, lambda: _framework_start("framework", frame, dict(
+                        library="llama-index-core", version=version, what="span", component=component,
+                        method=method, inputs=_fp_framework(arguments))),
+                        f"{component}.{method}" if component and method else (component or "a span on code that isn't LlamaIndex's"))
+            except Exception as e:
+                _failed("llamaindex", e)
+            return None
+
+        def prepare_to_exit_span(self, id_, bound_args, instance=None, result=None, **kw):
+            if not _busy():
+                try:
+                    with _Busy():
+                        runs.end(id_, returned=result)
+                except Exception as e:
+                    _failed("llamaindex", e)
+            return None
+
+        def prepare_to_drop_span(self, id_, bound_args, instance=None, err=None, **kw):
+            if not _busy():
+                try:
+                    with _Busy():
+                        runs.end(id_, error=err if err is not None else Exception())
+                except Exception as e:
+                    _failed("llamaindex", e)
+            return None
+
+    module.get_dispatcher().add_span_handler(_Spans())
+    _tapped.add("llamaindex")
+
+
+def _tap_opentelemetry(module):
+    """OpenTelemetry: a span processor added to every SDK tracer provider when it is made. It
+    reads each span the program emits and changes none."""
+    provider, base = getattr(module, "TracerProvider", None), getattr(module, "SpanProcessor", None)
+    if provider is None or base is None or getattr(provider.__init__, "_onetrace_ci", False):
+        return
+    with _Busy():
+        version = _version("opentelemetry-sdk")
+    started = {}
+
+    def key(span):
+        context = span.get_span_context() if hasattr(span, "get_span_context") else getattr(span, "context", None)
+        return (getattr(context, "trace_id", None), getattr(context, "span_id", None))
+
+    class _SpanTap(base):
+        def on_start(self, span, parent_context=None):
+            if _busy():
+                return
+            try:
+                with _Busy():
+                    frame = sys._getframe()
+                    name = span.name
+                    scope = getattr(getattr(span, "instrumentation_scope", None), "name", None)
+                    named = isinstance(name, str) and _written(frame, _quoted(name))
+                    scope_named = isinstance(scope, str) and (
+                        _written(frame, _quoted(scope)) or _is_package_file(_module_dict(sys.modules.get(scope)).get("__file__")))
+                    event = _framework_start("span", frame, dict(
+                        library="opentelemetry-sdk", version=version, name=name if named else None,
+                        scope=scope if scope_named else None))
+                    if event is not None:
+                        with _lock:
+                            started[key(span)] = event
+            except Exception as e:
+                _failed("opentelemetry", e)
+
+        def on_end(self, span):
+            if _busy():
+                return
+            try:
+                with _lock:
+                    event = started.pop(key(span), None)
+                if event is None:
+                    return
+                with _Busy():
+                    done = {"attributes": _fp_framework(dict(span.attributes or {})),
+                            "status": str(getattr(getattr(span.status, "status_code", None), "name", "UNSET")).lower()}
+                    raised = {str((e.attributes or {}).get("exception.type", "")).rpartition(".")[2]
+                              for e in (span.events or ()) if e.name == "exception"}
+                    done["exceptions"] = sorted(t for t in raised if _exception_class(t))
+                with _lock:
+                    event.update(done)
+            except Exception as e:
+                _failed("opentelemetry", e)
+
+        def shutdown(self):
+            return None
+
+        def force_flush(self, timeout_millis=30000):
+            return True
+
+    tap = _SpanTap()
+    real_init = provider.__init__
+
+    @functools.wraps(real_init)
+    def __init__(self, *a, **kw):
+        real_init(self, *a, **kw)
+        try:
+            self.add_span_processor(tap)
+        except Exception as e:
+            _failed("opentelemetry", e)
+
+    __init__._onetrace_ci = True
+    provider.__init__ = __init__
+
+
+_PATCHES = {"requests": _patch_requests, "httpx": _patch_httpx,
+            "langchain_core.tracers.context": _tap_langchain,
+            "llama_index_instrumentation": _tap_llamaindex,
+            "llama_index.core.instrumentation": _tap_llamaindex,
+            "opentelemetry.sdk.trace": _tap_opentelemetry}
+
+
+_finding = threading.local()
 
 
 class _Finder:
     """Patches a library when it is imported, not before, so nothing is imported that the
-    command would not have imported itself."""
+    command would not have imported itself. It stays on `sys.meta_path` while it looks the
+    module up (another thread may be importing): a flag of this thread's own stops it finding
+    itself."""
 
     def find_spec(self, name, path=None, target=None):
-        if name not in _PATCHES:
+        if name not in _PATCHES or getattr(_finding, "active", False):
             return None
         import importlib.util
-        sys.meta_path.remove(self)
+        _finding.active = True
         try:
             spec = importlib.util.find_spec(name)
         finally:
-            sys.meta_path.insert(0, self)
+            _finding.active = False
         if spec is None or spec.loader is None:
             return spec
         real_exec = spec.loader.exec_module
@@ -903,7 +1319,10 @@ class _Finder:
 
 for _name, _patch in _PATCHES.items():
     if _name in sys.modules:
-        _patch(sys.modules[_name])
+        try:
+            _patch(sys.modules[_name])
+        except Exception as _e:
+            _failed("patch " + _name, _e)
 sys.meta_path.insert(0, _Finder())
 
 

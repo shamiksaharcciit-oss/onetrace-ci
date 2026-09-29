@@ -13,6 +13,17 @@ pip install --no-deps -e .
 python -m pytest -q
 ```
 
+The tests of the framework integrations (LangChain, LlamaIndex, OpenTelemetry) skip unless the
+frameworks are installed from their test-only lock. Run them on their own, as the integrations
+job does: the rest of the suite stands in for `requests` with a stub, and assumes it isn't
+installed, which the frameworks' own dependencies (and LangSmith's pytest plugin) contradict.
+
+<!-- not executed -->
+```sh
+pip install --require-hashes -r requirements-integrations.lock
+ONETRACE_CI_REQUIRE_INTEGRATIONS=1 python -m pytest -q tests/test_discover_integrations.py
+```
+
 Every test reports how many items it examined (the `examined` fixture); a check that looks at
 nothing is a failure, not a pass. Write the test first. For any change to what the tool
 generates, to the gate, or to the plan reader, also show that the test catches the defect it

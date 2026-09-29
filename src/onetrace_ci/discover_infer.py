@@ -31,6 +31,7 @@ class Stage:
     http: list[str] = field(default_factory=list)
     subprocesses: list[str | None] = field(default_factory=list)
     exceptions: list[str] = field(default_factory=list)
+    frameworks: list[str] = field(default_factory=list)   # the framework runs and spans it started, as reasons
     packages: list[tuple[str, str, str]] = field(default_factory=list)
     settings: list[str] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
@@ -126,6 +127,31 @@ def _file(e: dict, verb: str) -> str:
     return f"the file `{e['name']}` is {verb}" if e.get("name") else f"{_unnamed_file(e)} is {verb}"
 
 
+def _framework(e: dict, detail: bool = True) -> str:
+    """A framework's run or span, as the report names it: by its class only when that is the
+    framework's own, and with the library's installed version."""
+    library = f"({e.get('library')} {e.get('version')})"
+    if e["kind"] == "span":
+        text = (f"the OpenTelemetry span `{e['name']}` {library}" if e.get("name")
+                else f"an OpenTelemetry span whose name is not written in the code {library}")
+        if detail and e.get("status") == "error":
+            text += "; it ended with an error" + (f" ({', '.join(e['exceptions'])})" if e.get("exceptions") else "")
+        return text
+    if e.get("library") == "llama-index-core":
+        head = (f"LlamaIndex's {e['component']}" + (f".{e['method']}" if e.get("method") else "")
+                if e.get("component") else "a LlamaIndex span on code that isn't LlamaIndex's")
+    else:
+        head = (f"LangChain's {e.get('what')} {e['component']}" if e.get("component")
+                else f"a LangChain {e.get('what')} whose name is not recorded")
+    text = f"{head} {library}"
+    if detail and e.get("inner"):
+        #: In name order: the order a framework starts the runs inside one is its own business.
+        text += ", which ran " + _list([f"{label} ({n} times)" if n > 1 else label for label, n in sorted(e["inner"].items())])
+    if detail and str(e.get("outcome", "")).startswith("raised "):
+        text += f"; it {e['outcome']}"
+    return text
+
+
 _WHAT = {
     "file-read": lambda e: _file(e, "read"),
     "file-write": lambda e: _file(e, "written"),
@@ -134,6 +160,8 @@ _WHAT = {
     "http": _describe_http,
     "subprocess": lambda e: (f"the program `{e['program']}` is run" if e.get("program") else
                              "a program whose name is not written in the code is run"),
+    "framework": lambda e: f"{_framework(e, detail=False)} runs",
+    "span": lambda e: f"{_framework(e, detail=False)} is emitted",
 }
 
 _FLAVOURS = {
@@ -271,6 +299,8 @@ def infer(repo: Path, entry: str, command: list[str], returncode: int, events: l
             s.subprocesses.append(e.get("program"))          # None: a name not written in the code
         elif kind == "exception" and e["type"] not in s.exceptions:
             s.exceptions.append(e["type"])
+        elif kind in ("framework", "span"):
+            s.frameworks.append(("emits " if kind == "span" else "runs ") + _framework(e))
 
     unexercised = _read_code(repo, entry, ordered, lines, packages)
 
@@ -296,6 +326,7 @@ def infer(repo: Path, entry: str, command: list[str], returncode: int, events: l
         s.reasons += [f"runs the program {p}" if p else "runs a program whose name is not written in the code"
                       for p in s.subprocesses]
         s.reasons += [f"raised {t} (its message is not recorded)" for t in s.exceptions]
+        s.reasons += [f"{r}, {n} times" if n > 1 else r for r, n in Counter(s.frameworks).items()]
         if s.http or s.outside_files:
             boundaries.append(f"{s.name}: " + "; ".join(s.http + [f"reads {f}" for f in s.outside_files])
                               + "; the record cannot see past it")

@@ -407,8 +407,42 @@ a draft someone may have started answering.
 It observes file reads and writes, environment reads, `subprocess.run`, HTTP
 calls through `requests` or `httpx` (naming `openai` or `anthropic` when
 their code made the call), exceptions, and the calls your entry function
-makes, directly or through a lambda, a comprehension or a decorator. It does
-not yet take in LangChain or LlamaIndex callbacks or OpenTelemetry spans.
+makes, directly or through a lambda, a comprehension or a decorator.
+
+It also takes in the frameworks your pipeline uses, once your code has
+imported them. The observer imports none of them itself.
+
+- **LangChain:** each run your code starts (a chain, a retriever, a model, a
+  tool), through a callback handler added the way LangChain adds its own
+  tracers. The runs it starts in turn are listed with it.
+- **LlamaIndex:** each span your code starts (a retriever's `retrieve`, a
+  model's `complete`), through a span handler on LlamaIndex's root
+  dispatcher. The spans inside it are listed with it.
+- **OpenTelemetry:** each span your program emits through the SDK, through a
+  span processor added to every tracer provider. Your own processors and
+  exporters see the same spans as before.
+
+Each one appears among its stage's reasons, or among the reads no stage
+explains. Inputs, outputs and span attributes are fingerprints, and a
+streamed result is never read. A component is named only if it is a class of
+the framework itself, so a LangChain run name or a class of your own isn't
+written. An OpenTelemetry span is named only if its name is written as a
+string in the code that started it.
+
+Tested with langchain-core 1.6.5, llama-index-core 0.14.25 (with
+llama-index-instrumentation 0.6.0) and opentelemetry-sdk 1.45.0, on Python
+3.10 to 3.12. These come from `requirements-integrations.lock`, a test-only
+lock installed only by the integrations job in `.github/workflows/tests.yml`.
+Other versions may work, but they aren't tested. Spans from a tracer provider
+that isn't the OpenTelemetry SDK's aren't seen.
+
+A run or span is placed where your code started it, from the stack at that
+moment. A LangChain run started from async code (`ainvoke`, `astream`), or
+while an event loop runs in the thread, isn't seen: the observer's handler
+asks LangChain to skip it there, so that it never takes a worker from your
+thread pool. Nor is any run or span started where none of your code is on
+the stack. One started in an asyncio task is placed where the event loop was
+started.
 
 - A function run in another thread or task while the entry runs is listed
   among the reads no stage explains, with what it read, but not proposed as
