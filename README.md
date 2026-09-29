@@ -19,6 +19,27 @@ declared baseline byte-for-byte; neither one, nor this gate, judges whether
 that output is *right*. A `pass` means "this run's own record checks out
 and matches what you previously approved," never "the answer is correct."
 
+## What waits for the next onetrace release
+
+Some of what a plan can ask for needs an `onetrace` SDK release that does not
+exist yet. **These are planned, not released.** Until that release exists,
+onetrace-ci refuses them, with a message that says so, and generates nothing
+for them:
+
+- **Signing and anchoring.** A plan's `sign` or `anchor` block other than
+  `none` is refused by `onetrace-ci instrument`. Runs are unsigned and
+  unanchored.
+- **Recording settings and the corpus link.** A stage's `config` or
+  `constants`, and the plan's `corpus`, are refused by `onetrace-ci
+  instrument`.
+- **Decorators.** `onetrace-ci instrument` writes plain wrapper code. Code
+  that uses the SDK's decorators is not generated, and a plan with several
+  `entries` is refused.
+
+Everything else here works with `onetrace` 0.1.1, the version
+`requirements.lock` pins. `onetrace-ci discover` asks about signing,
+anchoring and trust in its drafts; answer `none` until the release exists.
+
 ## Install
 
 <!-- not executed -->
