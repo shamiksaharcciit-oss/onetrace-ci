@@ -157,7 +157,7 @@ A run or baseline path is not a folder.
 
 The command discover observes failed, was not found, or was not given. Discovery drafts only from fixtures that pass: a failing run shows what went wrong, not what the pipeline does.
 
-**Fix:** Give discover, after `--`, a command that runs your fixtures and passes on its own (for example `-- pytest tests/test_pipeline.py`).
+**Fix:** Give discover, after `--`, a command that runs your fixtures, finishes, and passes on its own (for example `-- pytest tests/test_pipeline.py`).
 
 ## discover-entry-unseen
 

@@ -49,6 +49,7 @@ import shlex
 import sys
 import threading
 import time
+import types
 
 _STARTED = time.time_ns()
 _PREFIX = "ONETRACE_CI_DISCOVER_"
@@ -192,27 +193,77 @@ def _is_user(filename):
 
 
 _qualnames = {}
+#: Python 3.10 has no `co_qualname`. The tests force its fallback on newer Pythons too, so that
+#: path is tested everywhere; nothing else sets this.
+_CO_QUALNAME = not os.environ.get(_PREFIX + "QUALNAME_FALLBACK")
 
 
 def _qualname(code, module_globals):
-    """The function's qualified name. Python 3.10 has no `co_qualname`: there a module-level
-    function (followed through `__wrapped__`, for a decorated one) is found in its module's
-    globals, and anything else is taken as nested."""
-    q = getattr(code, "co_qualname", None)
+    """The function's qualified name. Python 3.10 has no `co_qualname`: there the code objects
+    a module defines are indexed once (see `_index`), and code the index doesn't reach is taken
+    as nested."""
+    q = getattr(code, "co_qualname", None) if _CO_QUALNAME else None
     if q is not None:
         return q
     q = _qualnames.get(code)
     if q is None:
-        q, obj = "<locals>." + code.co_name, module_globals.get(code.co_name)
-        for _ in range(10):
-            if obj is None:
-                break
-            if getattr(obj, "__code__", None) is code:
-                q = code.co_name
-                break
-            obj = getattr(obj, "__wrapped__", None)
-        _qualnames[code] = q
+        _index(module_globals, code.co_filename)
+        q = _qualnames.setdefault(code, "<locals>." + code.co_name)
     return q
+
+
+_indexed = set()
+
+
+def _index(module_globals, filename):
+    """Name every code object defined in `filename` that its module reaches: by each function
+    object's own `__qualname__` (a method's is `Class.method`; a closure a factory returned is
+    `factory.<locals>.inner`), and nested code by walking `co_consts` (`outer.<locals>.inner`).
+    Decorators are followed through `__wrapped__`; code from another file is never named here,
+    since `functools.wraps` copies the wrapped function's qualified name onto its wrapper.
+    Re-indexed when the module has gained names since."""
+    key = (id(module_globals), filename, len(module_globals))
+    if key in _indexed:
+        return
+    _indexed.add(key)
+    seen = set()
+
+    def add(code, qualname):
+        if code.co_filename != filename or code in _qualnames:
+            return
+        _qualnames[code] = qualname
+        for const in code.co_consts:
+            if isinstance(const, types.CodeType):
+                add(const, f"{qualname}.<locals>.{const.co_name}")
+
+    def visit(obj, depth):
+        if depth > 6 or id(obj) in seen:
+            return
+        seen.add(id(obj))
+        target = obj
+        for _ in range(10):
+            code = getattr(target, "__code__", None)
+            qualname = getattr(target, "__qualname__", None)
+            if isinstance(code, types.CodeType) and isinstance(qualname, str):
+                add(code, qualname)
+            following = getattr(target, "__wrapped__", None) or getattr(target, "__func__", None)
+            if following is None or following is target:
+                break
+            target = following
+        if isinstance(obj, type):
+            for value in list(vars(obj).values()):
+                if isinstance(value, property):
+                    for accessor in (value.fget, value.fset, value.fdel):
+                        if accessor is not None:
+                            visit(accessor, depth + 1)
+                else:
+                    visit(value, depth + 1)
+
+    for value in list(module_globals.values()):
+        try:
+            visit(value, 0)
+        except Exception:
+            continue                    # an object whose attributes can't be read names nothing
 
 
 def _transparent(frame):
@@ -534,6 +585,20 @@ class _Open:
 
 
 builtins.open = io.open = _Open()
+
+
+def _repoint_early_open():
+    """Code imported before this file ran may hold the real `open`. Python 3.10's pathlib does:
+    `Path.open` goes through `pathlib._NormalAccessor.open`, bound when pathlib was imported,
+    and an editable install's .pth imports pathlib before `sitecustomize` runs. Imported after,
+    pathlib binds the observed `open` itself."""
+    pathlib = sys.modules.get("pathlib")
+    accessor = getattr(pathlib, "_NormalAccessor", None)
+    if isinstance(accessor, type) and accessor.__dict__.get("open") is _real_open:
+        accessor.open = builtins.open
+
+
+_repoint_early_open()
 
 
 # ------------------------------------------------------------------ environment

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import sys
 import textwrap
 
@@ -39,6 +40,16 @@ def observe_in(root, overrides=None, command=None, extra_env=None):
     repo, stubs = make_discover_repo(root, overrides)
     env = dict(os.environ, LLM_API_KEY=MARKER, PYTHONPATH=str(stubs), **(extra_env or {}))
     return observe(command or RUN, repo=repo, entry="pipeline.main:run", events_path=root / "e.jsonl", env=env)
+
+
+@pytest.fixture(params=["co_qualname", "the Python 3.10 fallback"])
+def qualnames(request, monkeypatch):
+    """Where the observer takes a function's qualified name from. Python 3.10 has no
+    `co_qualname`; its fallback is forced on newer Pythons too, so that path is tested on every
+    Python, not only on 3.10."""
+    if request.param != "co_qualname":
+        monkeypatch.setenv("ONETRACE_CI_DISCOVER_QUALNAME_FALLBACK", "1")
+    return request.param
 
 
 def stages_of(draft):
@@ -77,17 +88,18 @@ def answer(request, passages, mode):
     outside = Path(tempfile.gettempdir()) / ("tok-" + key + ".txt")
     outside.write_text("x")
     outside.read_text()
-    subprocess.run("SHELLTOKEN=" + key + " echo hi", shell=True, capture_output=True)
+    subprocess.run("SHELLTOKEN=" + key + " echo hi", shell=True, capture_output=True, timeout=30)
     try:
-        subprocess.run(["tool-" + request.split()[-1].lower()], capture_output=True)
-    except OSError:
+        subprocess.run(["tool-" + request.split()[-1].lower()], capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
         pass
     os.environ.get("TENANT_" + request.split()[-1] + "_KEY")
     requests.Session().request("GET", "https://" + request.split()[-1].lower() + ".tenant.example.test/x")
     response = requests.Session().request("POST", "https://llm.example.test/v1/answer", json={"q": request})
     return {"answer": passages[0]["text"], "status": str(response.status_code), "mode": mode}
 '''
-WORD = "REQWORD9731"
+#: Made up per run, so no runner can have a program of that name (the pipeline runs "tool-<word>").
+WORD = "REQWORD" + secrets.token_hex(4).upper()
 
 
 def test_a_name_built_from_a_value_is_never_written(tmp_path, monkeypatch, capsys, examined):
@@ -385,7 +397,7 @@ def test_each_stage_keeps_its_own_exception(tmp_path, examined):
 
 # ------------------------------------------------------------------ what counts as a stage
 
-def test_lambdas_and_generator_expressions_in_the_entry_are_not_stages(tmp_path, monkeypatch, capsys, examined):
+def test_lambdas_and_generator_expressions_in_the_entry_are_not_stages(tmp_path, monkeypatch, capsys, examined, qualnames):
     main_py = textwrap.dedent('''\
         from pipeline.llm import answer
         from pipeline.retrieval import retrieve
@@ -404,7 +416,7 @@ def test_lambdas_and_generator_expressions_in_the_entry_are_not_stages(tmp_path,
     assert functions == [None, "pipeline.retrieval:retrieve", "pipeline.llm:answer"]
 
 
-def test_a_shared_decorator_does_not_merge_stages(tmp_path, monkeypatch, capsys, examined):
+def test_a_shared_decorator_does_not_merge_stages(tmp_path, monkeypatch, capsys, examined, qualnames):
     from tests.discover_fixtures import LLM, RETRIEVAL
     util = textwrap.dedent('''\
         import functools
@@ -429,7 +441,7 @@ def test_a_shared_decorator_does_not_merge_stages(tmp_path, monkeypatch, capsys,
             in section(report, "Called by the entry, but not proposed"))
 
 
-def test_a_method_named_like_the_entry_is_not_the_entry(tmp_path, monkeypatch, capsys, examined):
+def test_a_method_named_like_the_entry_is_not_the_entry(tmp_path, monkeypatch, capsys, examined, qualnames):
     main_py = textwrap.dedent('''\
         from pipeline.llm import answer
         from pipeline.retrieval import retrieve
@@ -712,6 +724,9 @@ def test_a_streamed_response_is_left_for_the_program(tmp_path, examined):
 def test_a_name_is_taken_only_from_the_code_that_used_it(tmp_path, monkeypatch, capsys, examined):
     """A value that happens to be written in a test file or the test runner's code, or that
     matches a mere identifier in the pipeline's code, is not written there as a name."""
+    #: Both are made up per run, so no runner can have a program of either name.
+    program = "parcel" + secrets.token_hex(4)          # written only in the test file
+    identifier = "passages_" + secrets.token_hex(4)    # an identifier in the pipeline, never a string
     llm = textwrap.dedent('''\
         import os
         import subprocess
@@ -720,20 +735,21 @@ def test_a_name_is_taken_only_from_the_code_that_used_it(tmp_path, monkeypatch, 
 
 
         def answer(request, passages, mode):
+            IDENTIFIER = passages
             requests.Session().request("GET", "https://" + os.environ["SVC_HOST"] + "/x")
             requests.Session().request("GET", "https://" + os.environ["SVC_HOST_2"] + "/x")
             requests.Session().request("POST", "https://llm.example.test/v1/answer")
             for program in (request.split()[-1], os.environ["TOOL"]):
                 try:
-                    subprocess.run([program], capture_output=True)
-                except OSError:
+                    subprocess.run([program], capture_output=True, timeout=30)
+                except (OSError, subprocess.SubprocessError):
                     pass
-            return {"answer": passages[0]["text"]}
-        ''')
-    test = "from pipeline.main import run\n\n\ndef test_the_pipeline_answers():\n    assert run('where is my parcel')\n"
+            return {"answer": IDENTIFIER[0]["text"]}
+        ''').replace("IDENTIFIER", identifier)
+    test = f"from pipeline.main import run\n\n\ndef test_the_pipeline_answers():\n    assert run('where is my {program}')\n"
     monkeypatch.setenv("SVC_HOST", "hookimpl")             # a word pluggy's own source is full of
     monkeypatch.setenv("SVC_HOST_2", "example")            # inside a URL in the pipeline, but not as a host
-    monkeypatch.setenv("TOOL", "passages")
+    monkeypatch.setenv("TOOL", identifier)
     rc, draft, report, events, err = discover_in(
         tmp_path, monkeypatch, capsys, {"repo/pipeline/llm.py": llm, "repo/tests/test_pipeline.py": test},
         command=[sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests/test_pipeline.py"])
@@ -742,7 +758,7 @@ def test_a_name_is_taken_only_from_the_code_that_used_it(tmp_path, monkeypatch, 
     for text in (draft, report, events):
         assert "calls hookimpl over" not in text and '"host": "hookimpl"' not in text
         assert "calls example over" not in text and '"host": "example"' not in text
-        assert "parcel" not in text and "runs the program passages" not in text and '"program": "passages"' not in text
+        assert program not in text and f"runs the program {identifier}" not in text and f'"program": "{identifier}"' not in text
     assert "a host whose name is not written in the code" in report
     assert "calls llm.example.test over HTTP" in report
     assert "runs a program whose name is not written in the code" in report
@@ -861,7 +877,7 @@ def test_a_generator_closed_early_leaves_no_call_behind(tmp_path, monkeypatch, c
     assert "is the output of stream" not in report
 
 
-def test_a_class_based_decorator_does_not_merge_stages(tmp_path, monkeypatch, capsys, examined):
+def test_a_class_based_decorator_does_not_merge_stages(tmp_path, monkeypatch, capsys, examined, qualnames):
     from tests.discover_fixtures import LLM, RETRIEVAL
     util = textwrap.dedent('''\
         import functools
@@ -885,7 +901,7 @@ def test_a_class_based_decorator_does_not_merge_stages(tmp_path, monkeypatch, ca
     assert functions == [None, "pipeline.retrieval:retrieve", "pipeline.llm:answer"]
 
 
-def test_a_nested_function_the_entry_calls_is_named_as_passed_through(tmp_path, monkeypatch, capsys, examined):
+def test_a_nested_function_the_entry_calls_is_named_as_passed_through(tmp_path, monkeypatch, capsys, examined, qualnames):
     retrieval = textwrap.dedent('''\
         import json
         from pathlib import Path
@@ -981,7 +997,7 @@ def test_every_python_process_the_command_starts_keeps_its_events(tmp_path, exam
     itself comes and goes with timing; the count of processes observed does not."""
     script = ("import subprocess, sys\nfrom pipeline.main import run\nrun('q')\n"
               "children = [subprocess.Popen([sys.executable, '-c', 'pass']) for _ in range(24)]\n"
-              "assert all(c.wait() == 0 for c in children)\n")
+              "assert all(c.wait(timeout=120) == 0 for c in children)\n")
     r = observe_in(tmp_path, command=[sys.executable, "-c", script])
     examined(1, "the observed command")
     assert r.returncode == 0, r.output[-500:]
@@ -1075,7 +1091,7 @@ def test_packages_come_from_the_process_that_ran_the_entry(tmp_path, monkeypatch
     retrieval = RETRIEVAL.replace("import json\n", "import json\n\nimport yaml\n").replace(
         "    docs = json.loads(", "    yaml.safe_load('[1]')\n    docs = json.loads(")
     launch = ("import subprocess\nimport sys\n\nsys.exit(subprocess.run([sys.executable, '-c', "
-              f"\"from pipeline.main import run; run({REQUEST!r})\"]).returncode)\n")
+              f"\"from pipeline.main import run; run({REQUEST!r})\"], timeout=300).returncode)\n")
     rc, draft, _, _, err = discover_in(tmp_path, monkeypatch, capsys,
                                        {"repo/pipeline/retrieval.py": retrieval, "repo/launch.py": launch},
                                        command=[sys.executable, "launch.py"])
@@ -1168,7 +1184,7 @@ def test_an_exception_thrown_into_a_context_manager_stage_is_not_its_own(tmp_pat
     assert "raised" not in session_reasons
 
 
-def test_no_stage_is_said_plainly_even_when_something_was_passed_through(tmp_path, monkeypatch, capsys, examined):
+def test_no_stage_is_said_plainly_even_when_something_was_passed_through(tmp_path, monkeypatch, capsys, examined, qualnames):
     tools = "class Loader:\n    def __call__(self, request):\n        return request.upper()\n"
     main_py = "from pipeline.tools import Loader\n\n\ndef run(request):\n    return Loader()(request)\n"
     rc, _, report, _, err = discover_in(tmp_path, monkeypatch, capsys,
@@ -1190,3 +1206,45 @@ def test_observe_keeps_its_events_apart_from_files_it_did_not_write(tmp_path, ex
     assert r.returncode == 0, r.output[-500:]
     assert any(e["kind"] == "entry" for e in r.events)
     assert unrelated.read_text(encoding="utf-8") == "someone else's\n"
+
+
+# ------------------------------------------------------------------ pathlib imported first (Python 3.10)
+
+ACCESSOR_RETRIEVAL = '''\
+import json
+import pathlib
+from pathlib import Path
+
+CORPUS = Path(__file__).resolve().parents[1] / "data" / "corpus.json"
+
+
+def retrieve(request):
+    with pathlib._NormalAccessor.open(CORPUS, "r", -1, "utf-8") as f:     # how 3.10's Path.open reads
+        docs = json.load(f)
+    words = set(request.lower().split())
+    return sorted(docs, key=lambda d: -len(words & set(d["text"].lower().split())))[:1]
+'''
+
+PATHLIB_FIRST = (
+    "import io\n"
+    "import pathlib\n"
+    "if not hasattr(pathlib, '_NormalAccessor'):\n"
+    "    class _NormalAccessor:              # 3.11+: stand in for 3.10's, which holds the real open\n"
+    "        open = io.open\n"
+    "    pathlib._NormalAccessor = _NormalAccessor\n"
+    "import site\n"
+    "site.main()                             # the observer loads only now, after pathlib\n"
+    "from pipeline.main import run\n"
+    f"run({REQUEST!r})\n")
+
+
+def test_reads_through_a_pathlib_imported_before_the_observer_are_seen(tmp_path, monkeypatch, capsys, examined):
+    """An editable install's .pth can import pathlib before the observer loads. On Python 3.10,
+    pathlib then holds the real open, and every Path read would go unseen."""
+    rc, draft, report, _, err = discover_in(tmp_path, monkeypatch, capsys,
+                                            {"repo/pipeline/retrieval.py": ACCESSOR_RETRIEVAL},
+                                            command=[sys.executable, "-S", "-c", PATHLIB_FIRST])
+    retrieve = next(s for s in stages_of(draft) if s["name"] == "retrieve")
+    examined(1, "the retrieve stage's files")
+    assert rc == 0, err
+    assert retrieve.get("files") == ["data/corpus.json"]

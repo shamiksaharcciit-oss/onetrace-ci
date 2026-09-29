@@ -101,10 +101,16 @@ def known_names(repo: Path) -> dict[str, list[str]]:
     return {"files": existing, "code": code}
 
 
+#: How long the observed command may run, in seconds. A command still running then is stopped,
+#: and discovery refuses: a fixture that doesn't finish tells nothing about the pipeline.
+COMMAND_TIMEOUT = 1800
+
+
 def observe(command: list[str], *, repo: Path, entry: str, events_path: Path,
-            env: dict | None = None, timeout: int = 1800) -> ObserveResult:
+            env: dict | None = None, timeout: int | None = None) -> ObserveResult:
     """Run `command` in `repo`, unchanged, with the observer loaded, and return what it recorded.
-    `events_path` is written afresh."""
+    `events_path` is written afresh. `timeout` defaults to `COMMAND_TIMEOUT`."""
+    timeout = COMMAND_TIMEOUT if timeout is None else timeout
     repo = repo.resolve()
     efile = entry_file(repo, entry)
     names = known_names(repo)
@@ -130,6 +136,9 @@ def observe(command: list[str], *, repo: Path, entry: str, events_path: Path,
                                   timeout=timeout)
         except FileNotFoundError:
             raise DiscoverRefused(f"the command {command[0]!r} was not found") from None
+        except subprocess.TimeoutExpired:
+            raise DiscoverRefused(f"the command did not finish within {timeout} seconds, and was stopped; "
+                                  f"discovery drafts only from fixtures that finish") from None
         #: Each Python process the command ran wrote its own file. They are joined in the order
         #: the processes started, each after a `process` line, so that what one process saw
         #: (the packages it imported, say) is never taken for another's.

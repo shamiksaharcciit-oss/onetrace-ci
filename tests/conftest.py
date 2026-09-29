@@ -9,6 +9,14 @@ from pathlib import Path
 import pytest
 
 
+def pytest_configure(config):
+    #: No discovery in the suite can hang the job: the command it observes gets 5 minutes, not
+    #: the 30 a user's fixtures get. (Every subprocess a test starts has its own timeout too;
+    #: tests/test_timeouts.py holds both.)
+    from onetrace_ci import discover
+    discover.COMMAND_TIMEOUT = 300
+
+
 def _write_run(out_dir: Path, run_id: str, *, retrieve_version="1.0.0",
                retrieve_text="same text", answer_ok=True,
                boundary: str | None = None, top_k: str = "1") -> None:

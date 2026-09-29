@@ -83,8 +83,9 @@ CODES: list[tuple[str, str, str]] = [
      "Move the existing file aside (or choose another path), then run the command again."),
     ("not-a-directory", r"not a directory",
      "Point the option at an existing run folder (one with a MANIFEST.json)."),
-    ("discover-command", r"the command exited \d+|the command .* was not found|the command to observe is missing",
-     "Give discover, after `--`, a command that runs your fixtures and passes on its own "
+    ("discover-command", r"the command exited \d+|the command .* was not found|the command to observe is missing|"
+                         r"the command did not finish within",
+     "Give discover, after `--`, a command that runs your fixtures, finishes, and passes on its own "
      "(for example `-- pytest tests/test_pipeline.py`)."),
     ("discover-entry-unseen", r"the observer never loaded|the command never called",
      "Name in --entry the function your fixtures call (`module.path:function`), and run a Python "
