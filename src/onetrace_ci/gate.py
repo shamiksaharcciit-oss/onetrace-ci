@@ -99,18 +99,16 @@ def _coverage_finding(run: Path, plan: Plan) -> Finding:
 
 
 def _undeclared_fields(run: Path) -> tuple[int, list[str]]:
-    """(receipts read, fields recorded as `undeclared`): a trust class or re-derivability
-    nobody stated. Decorated code records an omitted one as the explicit value `undeclared`."""
+    """(receipts read, fields nobody stated). Decorated code records a field left out by a
+    person as its cautious default value, and names it in the stage's `assertions.undeclared`
+    list (for example `["trust", "rederivable"]`); that list is what is read here."""
     fields, count = [], 0
     for p in sorted((run / "receipts").glob("*.json")):
         receipt = _read_json(p)
         count += 1
         stage = (receipt.get("stage") or {}).get("name")
-        for i in receipt.get("inputs") or []:
-            if i.get("trust_class") == "undeclared":
-                fields.append(f"stage {stage!r}: the trust class of input {i.get('name')!r}")
-        if (receipt.get("instrument") or {}).get("rederivable") == "undeclared":
-            fields.append(f"stage {stage!r}: rederivable")
+        undeclared = (receipt.get("assertions") or {}).get("undeclared") or []
+        fields += [f"stage {stage!r}: {field}" for field in undeclared]
     return count, fields
 
 

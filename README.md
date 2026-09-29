@@ -143,12 +143,16 @@ is ignored for gating purposes, but named in the summary. A missing or empty
 `approved_by` is a **fail**: a gate against an unapproved plan proves
 nothing.
 
-`require_declared` decides what the gate does with a field nobody declared
-(`undeclared`): `true` fails the run, naming the stages; `false` reports
-their count. It defaults to `true` in a plan with `stages` (one that
-`onetrace-ci instrument` reads, which can't produce `undeclared`, so `true`
-only catches a later hand edit), and to `false` in a plan without them (the
-plan `onetrace-ci init-ci` writes for code decorated by hand says `false`).
+`require_declared` decides what the gate does with a field nobody declared.
+Code decorated by hand that leaves out a trust class or re-derivability
+records the cautious default value, and names the field in the stage's
+`assertions.undeclared` list. `true` fails a run in which any stage's list
+is non-empty, naming the stages and the fields; `false` reports their count.
+It defaults to `true` in a plan with `stages` (one that `onetrace-ci
+instrument` reads; its generated code always passes explicit values, so
+`true` only catches a later hand edit), and to `false` in a plan without
+them (the plan `onetrace-ci init-ci` writes for code decorated by hand says
+`false`).
 
 ## `onetrace-ci baseline propose`
 

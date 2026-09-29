@@ -56,12 +56,14 @@ def test_a_fully_declared_run_passes_require_declared(make_run, write_plan, tmp_
 
 
 def _mark_undeclared(run, stage_file: str):
-    """PROVISIONAL, until the SDK can record such a run itself: mark one real receipt's
-    re-derivability `undeclared`, the value the SDK's decorators record for a field nobody
-    stated."""
+    """PROVISIONAL, until the SDK can record such a run itself: record one real receipt's
+    re-derivability as the SDK's decorators do when nobody stated it (SDK spec C2.4): the
+    cautious value, and the field named in `assertions.undeclared`."""
     p = run / "receipts" / stage_file
     r = json.loads(p.read_text(encoding="utf-8"))
-    r["instrument"]["rederivable"] = "undeclared"
+    r["instrument"]["rederivable"] = "false"
+    r["instrument"]["rederivable_note"] = "not stated by a person"
+    r.setdefault("assertions", {})["undeclared"] = ["rederivable"]
     p.write_text(json.dumps(r, sort_keys=True, separators=(",", ":")), encoding="utf-8")
 
 
