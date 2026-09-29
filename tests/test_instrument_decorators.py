@@ -142,6 +142,18 @@ def test_a_stage_s_output_that_is_only_read_needs_no_trust(tmp_path, examined):
     assert "pipeline/llm.py" in result.files
 
 
+def test_another_run_s_stage_in_a_module_a_stage_reaches_is_left_alone(tmp_path, examined):
+    """Only the functions a stage reaches are checked for an @ot.stage: a shared module may hold
+    another run type's hand-decorated stages."""
+    fmt = TIDY.replace('@ot.stage("tidy", rederivable=True)\n', "") + (
+        '\n\n@ot.stage("split", rederivable=True)\ndef split(x):\n    return x\n')
+    llm = "from pipeline.fmt import tidy\n\n\n" + LLM.replace('passages[0]["text"]', 'tidy(passages)[0]["text"]')
+    repo = make_repo(tmp_path / "repo", {"pipeline/fmt.py": fmt, "pipeline/llm.py": llm})
+    result = _patch(repo)
+    examined(1, "the patch for a stage that reaches a shared module")
+    assert "pipeline/llm.py" in result.files and "pipeline/fmt.py" not in result.files
+
+
 def test_a_local_named_like_a_helper_is_not_the_helper(tmp_path, examined):
     """`fetch` in the entry is its local, not the module's `fetch` that runs a stage."""
     main_py = MAIN.replace('    """Retrieve, then answer."""\n',
@@ -474,13 +486,25 @@ REFUSED.update({
     "a stage called without a defaulted parameter, without trust": (
         {"pipeline/llm.py": LLM.replace("def answer(passages):", 'def answer(passages, style="short"):')},
         ["stages[1].trust", "'style'", "default"]),
-    "an @ot.stage left in a module the entry imports": (
+    "an @ot.stage left on a function the entry calls": (
         {"onetrace-plan.yaml": PLAN.replace(ANSWER_BLOCK, ""),
-         "pipeline/llm.py": 'import onetrace as ot\n\n\n@ot.stage("answer", rederivable=False)\n' + LLM,
-         #: Reached through getattr, which no call-following sees: only the import is checked.
-         "pipeline/main.py": MAIN.replace("from pipeline.llm import answer\n", "import pipeline.llm as llm_mod\n")
-         .replace("    return answer(passages)\n", '    return getattr(llm_mod, "answer")(passages)\n')},
+         "pipeline/llm.py": 'import onetrace as ot\n\n\n@ot.stage("answer", rederivable=False)\n' + LLM},
         ["'answer'", "the plan names no stage for it"]),
+    "an async stage's calls wrapped in wait_for, then gathered": (
+        {"pipeline/llm.py": LLM.replace("def answer", "async def answer"),
+         "pipeline/main.py": MAIN.replace("from pipeline.llm import answer\n", "import asyncio\n\nfrom pipeline.llm import answer\n")
+         .replace("def run():", "async def run():")
+         .replace("    return answer(passages)\n",
+                  "    a = asyncio.wait_for(answer(passages), 5)\n    b = asyncio.wait_for(answer(passages), 5)\n"
+                  "    return await asyncio.gather(a, b)\n"),
+         "onetrace-plan.yaml": PLAN.replace('    rederivable: "false"\n', '    rederivable: "false"\n    repeats: true\n')},
+        ["'answer'", "is async", "not awaited"]),
+    "the entry reaches a stage through an inherited method": (
+        {"pipeline/again.py": AGAIN.replace("class Again:", "class Base:") + "\n\nclass Again(Base):\n    pass\n",
+         "pipeline/main.py": MAIN.replace("from pipeline.llm import answer\n",
+                                          "from pipeline.again import Again\nfrom pipeline.llm import answer\n")
+         .replace("    passages = retrieve()\n", "    passages = retrieve()\n    Again().go()\n")},
+        ["reaches stage 'retrieve'", "pipeline.again:Base.go", "dynamic dispatch"]),
     "a constants name that is not a parameter": (
         {"onetrace-plan.yaml": PLAN.replace('    rederivable: "false"\n', '    rederivable: "false"\n    constants: [pasages]\n')},
         ["'pasages'", "constants"]),
@@ -530,7 +554,9 @@ CODE = {"a corpus link": "decorator-waits", "named instances": "decorator-waits"
         "a stage's output changed in place, without trust": "missing-field",
         "a stage's output changed by index, without trust": "missing-field",
         "a stage called without a defaulted parameter, without trust": "missing-field",
-        "an @ot.stage left in a module the entry imports": "already-decorated",
+        "an @ot.stage left on a function the entry calls": "already-decorated",
+        "an async stage's calls wrapped in wait_for, then gathered": "dynamic-dispatch",
+        "the entry reaches a stage through an inherited method": "dynamic-dispatch",
         "a constants name that is not a parameter": "invalid-value",
         "the entry reaches a stage through a class": "dynamic-dispatch",
         "a stage that calls another stage through a class": "nested-stage",

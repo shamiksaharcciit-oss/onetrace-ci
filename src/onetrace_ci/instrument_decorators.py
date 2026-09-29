@@ -59,8 +59,11 @@ CONCURRENT = frozenset({"gather", "create_task", "ensure_future", "submit", "map
 #: Of those, the ones that call what they are given many times.
 _MANY = frozenset({"map", "starmap", "imap", "imap_unordered", "map_async", "starmap_async"})
 #: Calls that run the coroutine they are given, once, before they return: an async stage's call
-#: may be their argument, and it overlaps nothing (`await asyncio.wait_for(answer(p), 5)`).
-_RUNNERS = frozenset({"run", "run_until_complete", "wait_for", "shield"})
+#: may be their argument, and it overlaps nothing (`asyncio.run(answer(p))`).
+_RUNNERS = frozenset({"run", "run_until_complete"})
+#: Calls that wrap the one coroutine they are given: its call runs where the wrapper runs, so it
+#: is run in place only when the wrapper is (`await asyncio.wait_for(answer(p), 5)`).
+_WRAPPERS = frozenset({"wait_for", "shield"})
 #: How far calls are followed into the repository's own functions.
 _DEPTH = 8
 #: Builtins that read the value they are given and change nothing.
@@ -152,8 +155,10 @@ class _Analysis:
     entry_fn: object
     targets: dict[str, _Target]
     refs: dict[str, list[_Ref]] = field(default_factory=dict)
-    #: The modules already checked for an `@ot.stage` the plan does not match.
-    scanned: set[str] = field(default_factory=set)
+    #: The modules the patch touches, checked whole for an `@ot.stage` the plan does not match,
+    #: and the functions elsewhere already checked for one.
+    touched: set[str] = field(default_factory=set)
+    checked: set[int] = field(default_factory=set)
 
 
 def plan_waits(plan: InstrumentPlan) -> list[str]:
@@ -395,7 +400,7 @@ def analyse(src: _Source, plan: InstrumentPlan) -> _Analysis:
 
     # No stage runs another: not in its own body, not through a function or class of the
     # repository it calls, and not by being handed one.
-    reached: dict[str, _Module] = {}
+    reached: dict[int, tuple[_Module, object]] = {}
     for name, t in targets.items():
         for node, module, other, is_call, via in _stage_uses(src, t.module, t.binding.node, by_key,
                                                              reached=reached):
@@ -405,17 +410,12 @@ def analyse(src: _Source, plan: InstrumentPlan) -> _Analysis:
                             f"would run inside the outer one")
 
     # The modules the patch touches: no star import, no Recorder of their own, the name `ot`
-    # free, and no `@ot.stage` the plan does not match. The modules the entry imports, and those
-    # the stages reach, are checked for such an `@ot.stage` too: the SDK refuses a stage the run
-    # does not declare.
+    # free, and no `@ot.stage` the plan does not match. Each function a stage reaches elsewhere
+    # is checked for such an `@ot.stage` too: the SDK refuses a stage the run does not declare.
     involved = {entry_mod.name: entry_mod, **{t.module.name: t.module for t in targets.values()}}
     constant_fns = {id(targets[s.name].binding.node) for s in plan.stages if s.constants and s.name in targets}
-    scanned = [*involved.values(), *_imported(src, entry_mod, involved)]
-    scanned += [m for m in reached.values() if m.name not in {x.name for x in scanned}]
-    for module in scanned:
-        if module.name not in involved:
-            problems.extend(_decorator_problems(src, module, by_node))
-            continue
+    problems.extend(_reached_problems(src, reached, involved, by_node))
+    for module in involved.values():
         star = src.bindings(module).get("*")
         if star is not None and star.node is not None:
             problems.append(f"{module.at(star.node)}: a star import makes the names this module uses "
@@ -426,7 +426,8 @@ def analyse(src: _Source, plan: InstrumentPlan) -> _Analysis:
         for node in _alias_bindings(cst, module, constant_fns):
             problems.append(f"{module.at(node)}: this binds the name {ALIAS!r}, which the generated code "
                             f"reserves for `{IMPORT}`; rename it")
-        problems.extend(_decorator_problems(src, module, by_node))
+        problems.extend(_decorator_problems(src, module, [s for s in module.tree.body
+                                                          if isinstance(s, cst.FunctionDef)], by_node))
     for call in _recorder_calls(cst, entry_fn, _recorder_aliases(src, entry_mod)):
         problems.append(f"{entry_mod.at(call)}: {plan.entry} already creates a Recorder; @ot.run creates "
                         f"the run's recorder, so this code is already instrumented by hand")
@@ -453,7 +454,7 @@ def analyse(src: _Source, plan: InstrumentPlan) -> _Analysis:
         raise Refused(problems)
 
     a = _Analysis(plan, entry_mod, entry_fn, targets)
-    a.scanned = {m.name for m in scanned}
+    a.touched, a.checked = set(involved), set(reached)
     _find_refs(src, a, by_key, problems)
     _check_refs(src, a, problems)
     if problems:
@@ -461,13 +462,12 @@ def analyse(src: _Source, plan: InstrumentPlan) -> _Analysis:
     return a
 
 
-def _decorator_problems(src: _Source, module: _Module, by_node: dict[int, str]) -> list[str]:
-    """Each `@ot.stage` in `module` that the plan does not match: another stage's name, a name
-    that is not a literal, a function the plan names no stage for, or two on one function."""
-    cst, problems = src.cst, []
-    for stmt in module.tree.body:
-        if not isinstance(stmt, cst.FunctionDef):
-            continue
+def _decorator_problems(src: _Source, module: _Module, fns: list, by_node: dict[int, str]) -> list[str]:
+    """Each `@ot.stage` on the functions `fns` of `module` that the plan does not match: another
+    stage's name, a name that is not a literal, a function the plan names no stage for, or two
+    on one function."""
+    problems = []
+    for stmt in fns:
         decorated = [(d, *_sdk_decorator(src, module, d.decorator)) for d in stmt.decorators]
         stages = [(d, call) for d, kind, call in decorated if kind == "stage"]
         planned = by_node.get(id(stmt))
@@ -491,41 +491,42 @@ def _decorator_problems(src: _Source, module: _Module, by_node: dict[int, str]) 
     return problems
 
 
-def _imported(src: _Source, module: _Module, skip: dict) -> list[_Module]:
-    """The repository's modules that `module` imports at its top level, other than `skip`'s."""
-    found: dict[str, _Module] = {}
-    for b in src.bindings(module).values():
-        if b is None or b.kind not in ("module", "from"):
-            continue
-        names = [b.target] if b.kind == "module" else [f"{b.target}.{b.name}", b.target]
-        for name in names:
-            try:
-                loaded = src.load(name) if name else None
-            except Refused:
-                loaded = None            # not ours to judge: it is not a module the patch touches
-            if loaded is not None:
-                if loaded.name not in skip:
-                    found.setdefault(loaded.name, loaded)
-                break
-    return list(found.values())
+def _reached_problems(src: _Source, reached: dict, touched, by_node: dict[int, str]) -> list[str]:
+    """An `@ot.stage` the plan does not match, on a function reached outside the modules the
+    patch touches (those are checked whole). Only the functions reached: a module that also
+    holds another run's hand-decorated stages is not refused for them."""
+    problems = []
+    for module, fn in reached.values():
+        if module.name not in touched:
+            problems.extend(_decorator_problems(src, module, [fn], by_node))
+    return problems
 
 
-def _bodies(cst, t: _Target) -> list[tuple[object, str]]:
-    """The function bodies a use of `t` may run, with their names: a function's own, or every
-    method of a class (`__init__` included), since an instance of it may call any of them."""
-    b = t.binding
+def _bodies(src: _Source, t: _Target, seen: set | None = None) -> list[tuple[_Module, object, str]]:
+    """The function bodies a use of `t` may run, with their modules and names: a function's own,
+    or every method of a class (`__init__` included) and of its base classes in the repository,
+    since an instance of it may call any of them."""
+    cst, b = src.cst, t.binding
     if b.kind in ("def", "asyncdef"):
-        return [(b.node, t.name)]
-    if b.kind == "class" and isinstance(b.node.body, cst.IndentedBlock):
-        return [(s, f"{t.name}.{s.name.value}") for s in b.node.body.body if isinstance(s, cst.FunctionDef)]
-    return []
+        return [(t.module, b.node, t.name)]
+    seen = set() if seen is None else seen
+    if b.kind != "class" or not isinstance(b.node.body, cst.IndentedBlock) or t.key in seen:
+        return []
+    seen.add(t.key)
+    found = [(t.module, s, f"{t.name}.{s.name.value}") for s in b.node.body.body if isinstance(s, cst.FunctionDef)]
+    for base in b.node.bases:
+        parent = src.resolve_expr(t.module, base.value)
+        if parent is not None and parent.name and parent.binding.kind == "class":
+            found += _bodies(src, parent, seen)
+    return found
 
 
 def _stage_uses(src: _Source, module: _Module, fn, by_key: dict, via: tuple = (), seen: set | None = None,
                 reached: dict | None = None):
     """Each use of a stage in `fn`'s body, and in the bodies of the repository's functions and
     classes it uses, transitively: (node, its module, the stage, whether it is a call, the
-    functions on the way there). The modules it goes into are added to `reached`."""
+    functions on the way there). The functions it goes into are added to `reached`, by id, as
+    (module, function)."""
     cst = src.cst
     seen = set() if seen is None else seen
     if (module.name, id(fn)) in seen or len(via) > _DEPTH:
@@ -567,11 +568,11 @@ def _stage_uses(src: _Source, module: _Module, fn, by_key: dict, via: tuple = ()
         if callee.key in by_key:
             yield node, module, by_key[callee.key], is_call, via
             continue
-        for body, label in _bodies(cst, callee):
+        for owner, body, label in _bodies(src, callee):
             if reached is not None:
-                reached.setdefault(callee.module.name, callee.module)
-            step = f"{callee.module.name}:{label} ({callee.module.at(body)})"
-            yield from _stage_uses(src, callee.module, body, by_key, (*via, step), seen, reached)
+                reached.setdefault(id(body), (owner, body))
+            step = f"{owner.name}:{label} ({owner.at(body)})"
+            yield from _stage_uses(src, owner, body, by_key, (*via, step), seen, reached)
 
 
 def _find_refs(src: _Source, a: _Analysis, by_key: dict, problems: list[str]) -> None:
@@ -585,7 +586,7 @@ def _find_refs(src: _Source, a: _Analysis, by_key: dict, problems: list[str]) ->
                  cst.GeneratorExp: "in a generator expression"}
     unseen = ("how often it runs, and whether its calls overlap, cannot be seen from the entry function; "
               "that is dynamic dispatch")
-    reached: dict[str, _Module] = {}     # the repository's modules the entry's helpers go into
+    reached: dict[int, tuple] = {}       # the repository's functions the entry's helpers go into
 
     def called_name(call) -> str | None:
         f = call.func
@@ -659,10 +660,10 @@ def _find_refs(src: _Source, a: _Analysis, by_key: dict, problems: list[str]) ->
             if t.key in self.helpers:
                 return
             self.helpers.add(t.key)
-            for body, label in _bodies(cst, t):
-                reached.setdefault(t.module.name, t.module)
-                step = f"{t.module.name}:{label} ({t.module.at(body)})"
-                for use, module, stage, is_call, via in _stage_uses(src, t.module, body, by_key, (step,),
+            for owner, body, label in _bodies(src, t):
+                reached.setdefault(id(body), (owner, body))
+                step = f"{owner.name}:{label} ({owner.at(body)})"
+                for use, module, stage, is_call, via in _stage_uses(src, owner, body, by_key, (step,),
                                                                     reached=reached):
                     problems.append(f"{mod.at(node)}: {entry} reaches stage {stage!r} through "
                                     + ", then ".join(via) + f", at {module.at(use)}: {unseen}. Call the stage "
@@ -676,7 +677,8 @@ def _find_refs(src: _Source, a: _Analysis, by_key: dict, problems: list[str]) ->
             self.callees.add(id(call.func))
             self._add(call.func, call)
             pool = concurrent_name(call)
-            if pool is not None or called_name(call) in _RUNNERS:
+            name = called_name(call)
+            if pool is not None or name in _RUNNERS or (name in _WRAPPERS and id(call) in self.direct):
                 self.direct.update(id(arg.value) for arg in call.args)
             if pool is not None:
                 self.handed.update(id(arg.value) for arg in call.args)
@@ -704,10 +706,9 @@ def _find_refs(src: _Source, a: _Analysis, by_key: dict, problems: list[str]) ->
 
     fn.body.visit(Refs())
     by_node = {id(t.binding.node): name for name, t in a.targets.items()}
-    for module in reached.values():
-        if module.name not in a.scanned:
-            a.scanned.add(module.name)
-            problems.extend(_decorator_problems(src, module, by_node))
+    fresh = {key: found for key, found in reached.items() if key not in a.checked}
+    a.checked.update(fresh)
+    problems.extend(_reached_problems(src, fresh, a.touched, by_node))
 
 
 def _outputs(src: _Source, a: _Analysis, by_key_names: set[str]) -> set[str]:

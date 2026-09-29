@@ -434,8 +434,9 @@ def retrieve():
   return value passed straight to the next (`answer(retrieve())`) is two
   stages and one edge. An `async def` stage is decorated like any other; each
   call of it is awaited where it is made (`await answer(...)`), or given
-  straight to `asyncio.run`, `asyncio.gather` or a pool. A stage may be handed
-  to one concurrent call (`pool.submit(retrieve, q)`).
+  straight to `asyncio.run`, `asyncio.gather` or a pool, or to an
+  `asyncio.wait_for` that is itself awaited there. A stage may be handed to one
+  concurrent call (`pool.submit(retrieve, q)`).
 
 Run again on code it decorated from the same plan, it writes an empty patch.
 A decorator whose arguments differ from the plan is replaced, and the patch
@@ -477,8 +478,8 @@ In decorator style it refuses, with the file and line (or the plan field):
   is made;
 - a stage that may run more than once without `repeats: true`;
 - an `@ot.stage` with another name, or on a function the plan names no stage
-  for, in a module the patch touches, the entry imports, or the stages and
-  the entry's helpers reach;
+  for: anywhere in a module the patch touches, and on any other function the
+  entry or a stage reaches;
 - a function stage named `intake` (the SDK's name for the entry's
   parameters), and the name `ot` bound in a module it decorates;
 - a `Recorder` already created, and code already instrumented in wrapper
@@ -490,11 +491,12 @@ In decorator style it refuses, with the file and line (or the plan field):
 
 Its limits, stated plainly:
 
-- **It reads the code, and runs none of it.** A call through an object it
-  cannot resolve (a method of an object passed in, or returned by a call) is
-  not followed, so a stage run that way is not seen. The functions and
-  classes of the repository that the entry and the stages name are
-  followed.
+- **It reads the code, and runs none of it.** The functions and classes of
+  the repository that the entry and the stages name are followed, a class
+  through all its methods and those of its base classes in the repository. A
+  call through an object it cannot resolve (a method of an object passed in
+  or returned by a call, a stage held in a class attribute, a `getattr`) is
+  not followed, so a stage run that way is not seen.
 - **Stage bodies are not read for changes to their arguments.** If one stage
   changes the value it is given, in place, and another stage is then given
   the same value, the SDK records it for the second as an in-memory input.
