@@ -1550,3 +1550,62 @@ def test_the_events_carry_times_from_the_discovery_s_start_not_the_date(tmp_path
     examined(len(times), "times on file events")
     assert rc == 0, err
     assert times and all(0 <= t < 3600 * 10**9 for t in times), times[:3]
+
+
+def test_a_slotted_class_based_decorator_does_not_merge_stages(tmp_path, monkeypatch, capsys, examined, qualnames):
+    """A decorator class with `__slots__` keeps `__wrapped__` in a slot, not in a dict."""
+    from tests.discover_fixtures import LLM, RETRIEVAL
+    util = textwrap.dedent('''\
+        class traced:
+            __slots__ = ("__wrapped__",)
+
+            def __init__(self, fn):
+                self.__wrapped__ = fn
+
+            def __call__(self, *a, **kw):
+                return self.__wrapped__(*a, **kw)
+        ''')
+    rc, draft, _, _, err = discover_in(tmp_path, monkeypatch, capsys, {
+        "repo/pipeline/util.py": util,
+        "repo/pipeline/retrieval.py": RETRIEVAL.replace("def retrieve", "from pipeline.util import traced\n\n\n@traced\ndef retrieve"),
+        "repo/pipeline/llm.py": LLM.replace("def answer", "from pipeline.util import traced\n\n\n@traced\ndef answer")})
+    assert rc == 0, err
+    functions = [s.get("function") for s in stages_of(draft) or []]
+    examined(len(functions), "drafted stages")
+    assert functions == [None, "pipeline.retrieval:retrieve", "pipeline.llm:answer"]
+
+
+def test_a_property_subclass_s_accessor_is_named_by_its_class(tmp_path, monkeypatch, capsys, examined, qualnames):
+    from tests.discover_fixtures import MAIN, RETRIEVAL
+    retrieval = RETRIEVAL + textwrap.dedent('''\
+
+
+        class setting(property):
+            """A property of the program's own kind."""
+
+
+        class Config:
+            @setting
+            def limit(self):
+                return 1
+        ''')
+    main = MAIN.replace("from pipeline.retrieval import retrieve", "from pipeline.retrieval import Config, retrieve").replace(
+        "    passages = retrieve(request)\n", "    Config().limit\n    passages = retrieve(request)\n")
+    rc, draft, _, _, err = discover_in(tmp_path, monkeypatch, capsys, {
+        "repo/pipeline/retrieval.py": retrieval, "repo/pipeline/main.py": main})
+    functions = [s.get("function") for s in stages_of(draft)]
+    examined(len(functions), "drafted stages")
+    assert rc == 0, err
+    assert "pipeline.retrieval:Config.limit" in functions, functions
+
+
+def test_a_stage_behind_functools_lru_cache_is_named(tmp_path, monkeypatch, capsys, examined, qualnames):
+    """lru_cache's wrapper is a C type; its `__wrapped__` is in the dictionary it gets from Python."""
+    from tests.discover_fixtures import RETRIEVAL
+    retrieval = RETRIEVAL.replace("import json\n", "import functools\nimport json\n", 1).replace(
+        "def retrieve", "@functools.lru_cache(maxsize=None)\ndef retrieve")
+    rc, draft, _, _, err = discover_in(tmp_path, monkeypatch, capsys, {"repo/pipeline/retrieval.py": retrieval})
+    assert rc == 0, err
+    functions = [s.get("function") for s in stages_of(draft) or []]
+    examined(len(functions), "drafted stages")
+    assert functions == [None, "pipeline.retrieval:retrieve", "pipeline.llm:answer"]

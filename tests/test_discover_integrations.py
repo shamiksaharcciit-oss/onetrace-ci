@@ -489,3 +489,64 @@ def test_an_async_langchain_run_takes_nothing_from_the_program_s_thread_pool(tmp
     examined(2, "the program's output, plain and observed")
     assert "WHAT DOES THE WARRANTY COVER" in plain
     assert observed == plain
+
+
+WRAPT_RETRIEVAL = {"repo/pipeline/retrieval.py": '''\
+import json
+from pathlib import Path
+
+import wrapt
+
+
+class Guarded:
+    @property
+    def __dict__(self):
+        print("Guarded.__dict__ was read")
+        return {}
+
+
+#: A proxy of wrapt's (a C type, whose own __dict__ reads the wrapped object's): reading
+#: through it would run Guarded's property.
+proxied = wrapt.ObjectProxy(Guarded())
+
+CORPUS = Path(__file__).resolve().parents[1] / "data" / "corpus.json"
+
+
+@wrapt.decorator
+def traced(wrapped, instance, args, kwargs):
+    return wrapped(*args, **kwargs)
+
+
+@traced
+def retrieve(request):
+    docs = json.loads(CORPUS.read_text(encoding="utf-8"))
+    words = set(request.lower().split())
+    return sorted(docs, key=lambda d: -len(words & set(d["text"].lower().split())))[:1]
+''', "repo/pipeline/llm.py": LANGCHAIN["repo/pipeline/llm.py"]}
+
+
+def test_python_3_10_names_a_wrapt_decorated_stage_as_newer_pythons_do(tmp_path, monkeypatch, capsys, examined):
+    """Python 3.10 has no `co_qualname`; its fallback (forced here on any Python) names what a
+    wrapt decorator wraps through wrapt's own C attribute, and reads nothing through a proxy."""
+    need("wrapt")
+    need("langchain_core")
+    names = {}
+    for mode in ("co_qualname", "fallback"):
+        if mode == "fallback":
+            monkeypatch.setenv("ONETRACE_CI_DISCOVER_QUALNAME_FALLBACK", "1")
+        rc, draft, _, _, err = discover_with(tmp_path / mode, monkeypatch, capsys, WRAPT_RETRIEVAL)
+        assert rc == 0, err
+        names[mode] = [s.get("function") for s in read_document(draft, source="draft")["stages"]]
+    examined(2, "the stages drafted with each way of naming functions")
+    assert names["fallback"] == names["co_qualname"], names
+    assert not any("<locals>" in str(n) for n in names["fallback"]), names
+
+
+def test_python_3_10_naming_reads_nothing_through_a_proxy(tmp_path, monkeypatch, examined):
+    need("wrapt")
+    need("langchain_core")
+    monkeypatch.setenv("ONETRACE_CI_DISCOVER_QUALNAME_FALLBACK", "1")
+    plain, observed, _ = prints_the_same(tmp_path, WRAPT_RETRIEVAL)
+    examined(2, "the program's output, plain and observed")
+    assert "was read" not in plain
+    assert observed == plain

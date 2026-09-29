@@ -129,14 +129,95 @@ def _fp(data):
     return "fp:" + hmac.new(_KEY, data, hashlib.sha256).hexdigest()[:16]
 
 
+#: A class's own namespace and method resolution order, read through `type` itself: a
+#: metaclass's own `__getattribute__` never runs.
+_class_dict = type.__dict__["__dict__"].__get__
+_class_mro = type.__dict__["__mro__"].__get__
+_class_name = type.__dict__["__name__"].__get__
+
+
+class _Plain:
+    pass
+
+
+#: The descriptor Python gives a class defined in Python for its objects' own dictionary. A C
+#: type may define a `__dict__` of its own (a proxy's reads the object it wraps); it is told
+#: apart by its doc, which is Python's own.
+_INSTANCE_DICT_DOC = _class_dict(_Plain)["__dict__"].__doc__
+#: C types of the standard library whose `__dict__` is their objects' own plain dictionary
+#: (lru_cache's wrapper, where `functools.wraps` puts `__wrapped__`, and partial).
+_PLAIN_DICT_TYPES = (functools._lru_cache_wrapper, functools.partial)
+
+
+def _wrapt_proxy(klass):
+    """wrapt's C ObjectProxy, whose `__wrapped__` is the object it holds, read in C. Other C
+    proxies' may run code (lazy_object_proxy's calls the program's factory)."""
+    wrappers = _module_dict(sys.modules.get("wrapt._wrappers")).get("ObjectProxy")
+    return wrappers is not None and klass is wrappers
+
+
+def _own_attribute(obj, name):
+    """An attribute of an object, read without running any code of the program's (no
+    `__getattr__`, no property, no proxy's forwarding): from a slot, from wrapt's C
+    `__wrapped__`, or from the plain instance dictionary Python gives its objects. None when it
+    is held anywhere else."""
+    kind = type(obj)
+    mro = _class_mro(kind)
+    for klass in mro:
+        found = _class_dict(klass).get(name)
+        if found is not None:
+            readable = type(found) is types.MemberDescriptorType or (
+                type(found) is types.GetSetDescriptorType and _wrapt_proxy(found.__objclass__))
+            if not readable:
+                return None             # a property, or anything else a class defines: its code
+            try:
+                return found.__get__(obj, kind)
+            except Exception:
+                return None
+    for klass in mro:
+        descriptor = _class_dict(klass).get("__dict__")
+        if descriptor is not None:
+            if type(descriptor) is not types.GetSetDescriptorType or not (
+                    descriptor.__doc__ == _INSTANCE_DICT_DOC or descriptor.__objclass__ in _PLAIN_DICT_TYPES):
+                return None
+            try:
+                namespace = descriptor.__get__(obj, kind)
+            except Exception:
+                return None
+            return namespace.get(name) if type(namespace) is dict else None
+    return None
+
+
+def _plain_text(value):
+    """A str, bytes or pathlib path, as text; None for anything else, whose `__str__` or
+    `__fspath__` would be the program's code."""
+    kind = type(value)
+    if issubclass(kind, str):
+        return str.__str__(value)
+    if issubclass(kind, (bytes, bytearray)):
+        return os.fsdecode(bytes(memoryview(value)))
+    if kind is os.DirEntry:
+        return os.fspath(value)
+    pathlib = sys.modules.get("pathlib")
+    if pathlib is not None and issubclass(kind, pathlib.PurePath):
+        return pathlib.PurePath.__str__(value)
+    return None
+
+
 def _default(o):
-    if isinstance(o, (bytes, bytearray)):
-        return {"bytes": _fp(bytes(o))}
-    if isinstance(o, (set, frozenset)):
-        return sorted(o, key=repr)
-    if hasattr(o, "__fspath__"):
-        return os.fspath(o)
-    raise TypeError(type(o).__name__)
+    """The values JSON can't hold that are fingerprinted anyway: bytes, sets (in the order of
+    their elements' own encodings, never their repr) and pathlib paths. Only the value's type is
+    asked: nothing of the program's runs."""
+    kind = type(o)
+    if issubclass(kind, (bytes, bytearray)):
+        return {"bytes": _fp(bytes(memoryview(o)))}
+    if issubclass(kind, (set, frozenset)):
+        elements = set.__iter__(o) if issubclass(kind, set) else frozenset.__iter__(o)
+        return sorted(json.dumps(x, sort_keys=True, default=_default, ensure_ascii=False) for x in elements)
+    text = _plain_text(o) if not issubclass(kind, str) else None
+    if text is not None:
+        return text
+    raise TypeError(_class_name(kind))
 
 
 def _fp_value(value):
@@ -150,7 +231,7 @@ def _fp_value(value):
     try:
         data = json.dumps(value, sort_keys=True, default=_default, ensure_ascii=False).encode("utf-8")
     except Exception:
-        return "unrecorded:" + type(value).__name__
+        return "unrecorded:" + _class_name(type(value))
     return _fp(data)
 
 
@@ -259,25 +340,35 @@ def _index(module_globals, filename):
                 add(const, f"{qualname}.<locals>.{const.co_name}")
 
     def visit(obj, depth):
+        """Only functions, methods and classes are looked into, and only through what Python
+        itself holds for them: no attribute is read through an object of the program's own (a
+        module imported lazily would load; a `__getattr__` would run)."""
         if depth > 6 or id(obj) in seen:
             return
         seen.add(id(obj))
         target = obj
         for _ in range(10):
-            code = getattr(target, "__code__", None)
-            qualname = getattr(target, "__qualname__", None)
-            if isinstance(code, types.CodeType) and isinstance(qualname, str):
-                add(code, qualname)
-            following = getattr(target, "__wrapped__", None) or getattr(target, "__func__", None)
+            kind = type(target)
+            if kind is types.FunctionType:
+                add(target.__code__, target.__qualname__)
+                following = target.__dict__.get("__wrapped__")      # where functools.wraps puts it
+            elif kind is types.MethodType or kind is staticmethod or kind is classmethod:
+                following = target.__func__
+            elif issubclass(kind, types.ModuleType) or issubclass(kind, type):
+                break
+            else:
+                following = _own_attribute(target, "__wrapped__")   # a class-based decorator's
             if following is None or following is target:
                 break
             target = following
-        if isinstance(obj, type):
-            for value in list(vars(obj).values()):
-                if isinstance(value, property):
-                    for accessor in (value.fget, value.fset, value.fdel):
-                        if accessor is not None:
-                            visit(accessor, depth + 1)
+        if issubclass(type(obj), type):
+            for value in list(_class_dict(obj).values()):
+                if issubclass(type(value), property):
+                    #: A property of the program's own kind too, through property's own slots.
+                    for accessor in ("fget", "fset", "fdel"):
+                        function = property.__dict__[accessor].__get__(value, property)
+                        if function is not None:
+                            visit(function, depth + 1)
                 else:
                     visit(value, depth + 1)
 
@@ -727,10 +818,13 @@ _ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 def _program(args, frame):
     """The program's name, if the code on the stack writes it; `python` for this interpreter;
     else None. A shell string's leading `NAME=value` assignments are never taken for it."""
-    if isinstance(args, (list, tuple)):
-        first = args[0] if args else ""
+    if issubclass(type(args), (list, tuple)):
+        base = list if issubclass(type(args), list) else tuple
+        first = base.__getitem__(args, 0) if base.__len__(args) else ""
     else:
-        text = os.fsdecode(args) if isinstance(args, bytes) else str(args)
+        text = _plain_text(args)
+        if text is None:
+            return None
         try:
             tokens = shlex.split(text, posix=os.name != "nt")
         except ValueError:
@@ -739,9 +833,9 @@ def _program(args, frame):
         while tokens and _ASSIGNMENT.match(tokens[0]):
             tokens.pop(0)
         first = tokens[0] if tokens else ""
-    if hasattr(first, "__fspath__"):
-        first = os.fspath(first)
-    first = os.fsdecode(first) if isinstance(first, bytes) else str(first)
+    first = _plain_text(first)
+    if first is None:
+        return None                     # an object of the program's own: its name is its code's
     if os.sep in first or "/" in first:
         if os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(sys.executable)):
             return "python"
@@ -915,7 +1009,7 @@ def _fp_framework(value):
     try:
         data = json.dumps(value, sort_keys=True, default=_framework_default, ensure_ascii=False).encode("utf-8")
     except Exception:
-        return "unrecorded:" + type(value).__name__
+        return "unrecorded:" + _class_name(type(value))
     return _fp(data)
 
 
