@@ -29,12 +29,18 @@ for them:
 - **Signing and anchoring.** A plan's `sign` or `anchor` block other than
   `none` is refused by `onetrace-ci instrument`. Runs are unsigned and
   unanchored.
-- **Recording settings and the corpus link.** A stage's `config` or
-  `constants`, and the plan's `corpus`, are refused by `onetrace-ci
-  instrument`.
-- **Decorators.** `onetrace-ci instrument` writes plain wrapper code. Code
-  that uses the SDK's decorators is not generated, and a plan with several
-  `entries` is refused.
+- **Decorators.** `onetrace-ci instrument`'s default style writes the
+  decorators of onetrace 0.2.0 (`@ot.run` and `@ot.stage`), which is not
+  released yet: the generated code imports an API that `onetrace` 0.1.x does
+  not have. With 0.1.x, use `--style wrappers` (see
+  [Instrument from a plan](#instrument-from-a-plan)).
+- **What decorator output does not generate yet.** An entry with parameters,
+  calls of one stage that may overlap, a stage's named `instances`, the
+  plan's `corpus`, and a plan with several `entries` are refused, each with
+  its reason.
+- **Recording settings in wrapper style.** A stage's `config` or `constants`,
+  and the plan's `corpus`, are refused by `--style wrappers`. Decorator
+  output generates `config` and `constants`.
 
 Everything else here works with `onetrace` 0.1.1, the version
 `requirements.lock` pins. `onetrace-ci discover` asks about signing,
@@ -137,7 +143,8 @@ reproduce: false
 approved_by: alice
 ```
 
-The keys `onetrace-ci instrument` reads (`entry`, `run_dir`, `stages`, `ci`)
+The keys `onetrace-ci instrument` reads (`entry`, `run_dir`, `stages` or
+`entries`, `ci`)
 belong to the same file; the gate does not use them. Any other top-level key
 is ignored for gating purposes, but named in the summary. A missing or empty
 `approved_by` is a **fail**: a gate against an unapproved plan proves
@@ -184,11 +191,24 @@ stored outputs are your pipeline's data.
 
 <!-- run in a fixture repo -->
 ```
-onetrace-ci instrument --plan onetrace-plan.yaml --repo . --out instrument.patch
+onetrace-ci instrument --plan onetrace-plan.yaml --repo . --style wrappers --out instrument.patch
 ```
 
 **The patch records what your plan names; it does not find stages you
 didn't list.** The tool writes the boilerplate; you own the meaning.
+
+It writes one of two styles:
+
+- **`--style decorators`, the default:** onetrace 0.2.0's `@ot.run` on the
+  entry function and `@ot.stage` on each stage function (see
+  [Decorator style](#decorator-style)). **onetrace 0.2.0 is not released
+  yet**, so code in this style does not run with the `onetrace` that
+  `requirements.lock` pins.
+- **`--style wrappers`:** Recorder-API wrappers inside the entry function, for
+  the released `onetrace` (see [What the patch does](#what-the-patch-does)).
+  The example above uses it, because it runs today.
+
+Both styles write the same workflow file.
 
 A person writes the plan: which functions are stages and in what order,
 where each stage's inputs come from and how far they are trusted, whether
@@ -243,9 +263,62 @@ never fills one in by guessing. A `DECIDE:` question left in any field is
 refused the same way. Every `instrument` names its `kind` (retriever,
 chunker, model…), because the SDK's `Instrument` requires one.
 
+### Several entries
+
+A pipeline with a separate ingest has two run types. A plan names each under
+`entries:`, with its own `entry`, `run_dir`, `stages` and, for the query, a
+`corpus` link to the ingest's run:
+
+```yaml
+approved_by: alice
+entries:
+  - entry: pipeline.main:run             # the query run
+    run_dir: runs/query-{run_id}
+    stages:
+      - name: retrieve
+        function: pipeline.retrieval:retrieve
+        instrument: {name: bm25, package: rank_bm25, kind: retriever}
+        files: [data/question.txt]
+        trust: operator-authored
+        rederivable: "true"
+    corpus:
+      from: runs/ingest-latest           # the ingest run the query reads
+      stages: [retrieve]                 # where the link is recorded
+      index_stage: index                 # the ingest stage whose output is the chunk index
+  - entry: pipeline.ingest:run           # the ingest run
+    run_dir: runs/ingest-{run_id}
+    stages:
+      - name: index
+        function: pipeline.ingest:build_index
+        instrument: {name: word-index, package: onetrace-verify, kind: indexer}
+        files: [data/corpus.json]
+        trust: operator-authored
+        rederivable: "true"
+approved_boundaries: []
+ci:
+  install: pip install --require-hashes -r requirements.lock
+  run: python -m pipeline.demo
+  baseline: runs/baseline
+```
+
+The plan is refused, naming the field, when:
+
+- two entries share an `entry` or a `run_dir`;
+- `index_stage` names a stage of the entry that carries the `corpus` block,
+  or no stage of another entry;
+- `corpus.from` is not a path to a run folder in the repository;
+- it has both `entries:` and a top-level `entry`, `run_dir`, `stages` or
+  `corpus`.
+
+`approved_by`, `approved_boundaries`, `ci`, `sign`, `anchor` and `trust` stay
+at the top level and apply to every entry. `instrument` reads such a plan but
+does not generate it yet (see
+[What waits for the next onetrace release](#what-waits-for-the-next-onetrace-release)).
+
 ### What the patch does
 
-In the entry module only:
+This section is the wrapper style (`--style wrappers`). In the entry module
+only:
 
 - **one `Recorder` per run**, created inside the entry function, with
   `close()` in a `finally`. Never a module-level recorder;
@@ -291,8 +364,8 @@ review it, and commit it.
 
 ### What it refuses
 
-Anything it cannot handle safely, with the file and line (or the plan
-field), and no patch is written:
+In wrapper style, anything it cannot handle safely, with the file and line
+(or the plan field), and no patch is written:
 
 - a missing meaning field in the plan, or a `DECIDE:` question left open;
 - a function it cannot resolve, a class method, a lambda, a generator, an
@@ -311,6 +384,89 @@ field), and no patch is written:
 - a `Recorder` already created at module level, or inside the entry function;
 - a name the generated code reserves (`_onetrace_…`);
 - an entry module that is not UTF-8, and plan paths with backslashes.
+
+### Decorator style
+
+The default style writes onetrace 0.2.0's decorators onto your functions and
+leaves the calls as you wrote them; the SDK records each call. For the plan
+above without its intake stage, and an entry without parameters:
+
+<!-- not executed -->
+```python
+import onetrace as ot
+
+
+@ot.run(
+    stages=["retrieve", "answer"],
+    run_dir="runs/{run_id}",
+    declared_edges=[{"from": "retrieve", "to": "answer"}],
+)
+def run():
+    ...
+
+
+@ot.stage(
+    "retrieve",
+    instrument=ot.pkg("bm25", "rank_bm25", kind="retriever"),
+    files=["data/corpus.json"],
+    trust="operator-authored",
+    rederivable=True,
+)
+def retrieve():
+    ...
+```
+
+- **`@ot.run`** names the plan's stages explicitly, in the plan's order, and
+  passes the plan's edges (each stage's `inputs`) as the approved topology.
+- **`@ot.stage`** carries every meaning field the plan states: `trust`,
+  `rederivable`, the note, `files`, and `instrument=ot.pkg(...)` with its
+  `kind` and `config`. Generated code states each one, so a run of it never
+  lists a field in `assertions.undeclared`.
+- **A stage's `constants`** become `ot.constant(name, value)` calls at the top
+  of its body, the only edit made inside a body.
+- **One `import onetrace as ot`** in each module it touches.
+- **`async def` stages** are decorated like any other. A stage called more
+  than once per run (at several places, or in a loop) needs `repeats: true`
+  in the plan, and the SDK numbers each call. One stage's return value passed
+  straight to the next (`answer(retrieve())`) is two stages and one edge.
+
+Run again on code it decorated from the same plan, it writes an empty patch.
+A decorator whose arguments differ from the plan is replaced, and the patch
+shows the old and the new.
+
+**A stage given anything but another stage's return value needs its `trust`
+in the plan.** The SDK records such an argument (a literal, an expression, a
+value that came back through a future) as an in-memory input, with the
+stage's trust class. A plan that leaves it out is refused, naming the stage
+and the call.
+
+**Every parameter of the entry is recorded.** The SDK records each parameter
+of the run function, so the plan lists every one in its intake stage's
+`memory_inputs`, and a plan that leaves one out is refused, naming it.
+onetrace-ci reads code, not types: a parameter the SDK cannot encode (a client
+object, say) is found only at run time, when the SDK raises
+`UnencodableValue` naming it. The fix is an encoder for that type, registered
+with `ot.encoder(type, fn)`. An entry with parameters is not generated yet
+(see [What waits for the next onetrace release](#what-waits-for-the-next-onetrace-release)).
+
+In decorator style it refuses, with the file and line (or the plan field):
+
+- a missing meaning field, or a `DECIDE:` question left open;
+- a function it cannot resolve, a lambda, a generator or async generator, a
+  class, or a name bound to anything but a function definition;
+- a stage that calls another stage inside its own body;
+- a stage the entry function never calls, and a stage's name shadowed there;
+- a stage that may run more than once without `repeats: true`;
+- an `@ot.stage` with another name, or on a function the plan names no stage
+  for;
+- a function stage named `intake` (the SDK's name for the entry's
+  parameters), and the name `ot` bound in a module it decorates;
+- a `Recorder` already created, and code already instrumented in wrapper
+  style;
+- what waits for the SDK: an entry with parameters; calls of one stage that
+  may overlap (handed to a pool or `asyncio.gather`, say, more than once),
+  and named `instances`, which each need `stage.instance(name)`; a `corpus`
+  link; several `entries`.
 
 ## Discover the stages first
 

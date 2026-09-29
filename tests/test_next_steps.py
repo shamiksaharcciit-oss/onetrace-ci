@@ -15,8 +15,8 @@ def _last(capsys) -> str:
 def test_instrument_ends_with_the_apply_command(tmp_path, capsys, examined):
     repo = make_repo(tmp_path / "repo")
     out = tmp_path / "instrument.patch"
-    assert instrument_main(["--plan", str(repo / "onetrace-plan.yaml"), "--repo", str(repo),
-                            "--out", str(out)]) == 0
+    assert instrument_main(["--style", "wrappers", "--plan", str(repo / "onetrace-plan.yaml"),
+                            "--repo", str(repo), "--out", str(out)]) == 0
     examined(1, "instrument's last line")
     assert _last(capsys) == f"next: git apply {out}"
 

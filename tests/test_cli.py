@@ -23,7 +23,7 @@ def test_usage_names_every_command(examined):
 
 def test_instrument_runs_from_the_command_line(tmp_path, examined):
     repo = make_repo(tmp_path / "repo")
-    result = _cli("instrument", "--plan", "onetrace-plan.yaml", "--repo", ".", "--out", "instrument.patch",
+    result = _cli("instrument", "--style", "wrappers", "--plan", "onetrace-plan.yaml", "--repo", ".", "--out", "instrument.patch",
                   cwd=repo)
     examined(1, "the patch file written by the command line")
     assert result.returncode == 0, result.stderr
@@ -33,7 +33,7 @@ def test_instrument_runs_from_the_command_line(tmp_path, examined):
 
 def test_instrument_refusal_exits_one_from_the_command_line(tmp_path, examined):
     repo = make_repo(tmp_path / "repo", {"onetrace-plan.yaml": "approved_by: alice\n"})
-    result = _cli("instrument", "--plan", "onetrace-plan.yaml", "--repo", ".", "--out", "x.patch", cwd=repo)
+    result = _cli("instrument", "--style", "wrappers", "--plan", "onetrace-plan.yaml", "--repo", ".", "--out", "x.patch", cwd=repo)
     examined(1, "a refused plan run through the command line")
     assert result.returncode == 1
     assert "plan field entry:" in result.stderr

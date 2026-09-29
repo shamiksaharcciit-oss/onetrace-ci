@@ -26,7 +26,7 @@ def _refusal_messages(tmp_path_factory) -> list[str]:
     for name, (overrides, _) in test_instrument_refusals.CASES.items():
         repo = make_repo(tmp_path_factory.mktemp("r"), overrides)
         with pytest.raises(Refused) as caught:
-            build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo)
+            build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo, style="wrappers")
         messages.extend(caught.value.problems)
     for module, extra in ((test_instrument_plan, None), (test_instrument_plan_blocks, PLAN),
                           (test_instrument_plan_settings, None)):
@@ -83,7 +83,7 @@ def _assert_fixed(stderr: str):
 def test_each_command_prints_the_fix_with_its_refusal(tmp_path, examined):
     repo = make_repo(tmp_path / "repo", {"onetrace-plan.yaml": PLAN.replace("    trust: operator-authored\n", "")})
     results = {
-        "instrument": _cli("instrument", "--plan", "onetrace-plan.yaml", "--repo", ".", "--out", "p", cwd=repo),
+        "instrument": _cli("instrument", "--style", "wrappers", "--plan", "onetrace-plan.yaml", "--repo", ".", "--out", "p", cwd=repo),
         "gate": _cli("gate", "--run", "nowhere", "--baseline", "nowhere", "--plan", "onetrace-plan.yaml",
                      "--out", "g", cwd=repo),
         "gate, plan outside the subset": _cli("gate", "--run", ".", "--baseline", ".", "--plan", "bad.yaml",

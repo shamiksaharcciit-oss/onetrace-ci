@@ -22,6 +22,10 @@ CODES: list[tuple[str, str, str]] = [
     ("key-material", r"never the key itself",
      "Put the name of the environment variable that holds the key in `sign.key_env`, and the "
      "key itself in your CI secret store."),
+    ("decorator-waits", r"\bwaits for\b",
+     "Leave this form out for now: onetrace-ci generates it once the SDK carries it (or once the "
+     "decision the message names is made). Until then, plan one entry without parameters, call each "
+     "stage from one place at a time, and name no instances or corpus link."),
     ("decorator-style", r"generated in decorator style only",
      "Generate this plan as decorators (onetrace 0.2.0's `@ot.run` and `@ot.stage`), which carry "
      "several entries, repeats and instances; the wrapper style does not."),
@@ -52,38 +56,50 @@ CODES: list[tuple[str, str, str]] = [
      "Correct the named field: the message says which values it accepts."),
     ("class-method", r"names a class method",
      "Make the stage a module-level function (a method can call it), and name that function."),
+    #: Before `unresolvable`: a shadowed name's message also says it "cannot be resolved".
+    ("shadowed", r"shadowed",
+     "Rename the parameter or local that hides the stage's name in the entry function."),
     ("unresolvable", r"no module file|has no top-level function|cannot be resolved|is both .* and",
      "Point the plan at a module-level `def` that exists under --repo, imported by name in the "
      "entry module (no star imports, and no module that is both a file and a package)."),
     ("not-a-function", r"is a lambda|is a generator|is an async|is a class, not|bound by assignment|"
                        r"is the entry function itself|two stages cannot share one function",
-     "Make each stage a plain, named, synchronous `def` that returns one value, distinct from the "
-     "entry function and from the other stages."),
+     "Make each stage a named `def` that returns one value (not a lambda, generator or class; "
+     "`async def` in decorator style only), distinct from the entry function and from the other "
+     "stages."),
+    ("already-decorated", r"is already decorated as",
+     "Make the existing `@ot.stage` agree with the plan: the same stage name, on the function the "
+     "plan names (or remove it). onetrace-ci replaces a matching decorator's arguments; it never "
+     "renames or moves one."),
     ("nested-stage", r"nested stage calls? (are|is) refused|inside its own body|inside the arguments of",
      "Call each stage once, on its own, from the entry function; don't call one stage from inside "
      "another."),
     ("dynamic-dispatch", r"dynamic dispatch",
      "Call the stage directly by name (`retrieve(q)`), not through a variable, table or getattr."),
-    ("shadowed", r"shadowed",
-     "Rename the parameter or local that hides the stage's name in the entry function."),
     ("star-import", r"star import",
      "Import the names you use explicitly (`from pkg import retrieve`)."),
     ("stage-placement", r"at the top level of|in one statement|called conditionally|inside an assert|"
                         r"between .* which are called in one statement|comes after the last function stage",
      "Call each stage exactly once, in a statement of its own, at the top level of the entry "
      "function: not in a loop, branch, try block, assert, lambda or comprehension."),
+    ("repeats", r"needs `repeats: true`",
+     "If the stage runs more than once per run, one call after another, add `repeats: true` to it in "
+     "the plan (the SDK numbers each call); otherwise call it from one place."),
     ("stage-order", r"never called directly|more than once|is called before stage",
-     "Call every planned stage once, in the order the plan lists them."),
-    ("memory-input", r"is not a parameter of",
-     "Name a parameter of the entry function in `memory_inputs`, or add the parameter."),
+     "Call every planned stage directly from the entry function; in wrapper style, call each once, "
+     "in the order the plan lists them."),
+    ("memory-input", r"is not a parameter of|is not listed in any stage's memory_inputs",
+     "List every parameter of the entry function in the intake stage's `memory_inputs` (the SDK "
+     "records each one), and only parameters."),
     ("recorder-present", r"module-level Recorder|already creates a Recorder",
      "Remove the hand-written Recorder, or keep the hand instrumentation and use `init-ci` "
      "instead of `instrument`."),
-    ("reserved-name", r"which the generated code reserves",
-     "Rename the name that starts with `_onetrace`."),
+    ("reserved-name", r"which the generated code reserves|is reserved: in decorator style",
+     "Rename it: the generated code reserves names starting with `_onetrace` (wrapper style), and "
+     "the name `ot` in the modules it decorates and the stage name `intake` (decorator style)."),
     ("source-encoding", r"not valid Python|declares the .* encoding|not valid UTF-8",
      "Make the file valid UTF-8 Python (fix the named line, or convert the encoding)."),
-    ("instrumented-other-plan", r"already instrumented from a different plan",
+    ("instrumented-other-plan", r"already instrumented from a different plan|already instrumented in wrapper style",
      "Revert the earlier patch (`git apply -R` it), then run instrument again."),
     ("will-not-overwrite", r"already exists",
      "Move the existing file aside (or choose another path), then run the command again."),

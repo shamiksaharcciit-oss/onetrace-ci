@@ -20,7 +20,7 @@ SHA_RE = re.compile(r"[0-9a-f]{40}")
 def patched(tmp_path):
     """(repo, result, patched entry source, patched entry AST), with the patch applied by git."""
     repo = make_repo(tmp_path / "repo")
-    result = build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo)
+    result = build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo, style="wrappers")
     patch = tmp_path / "instrument.patch"
     patch.write_bytes(result.patch.encode("utf-8"))
     applied = subprocess.run(["git", "apply", "--verbose", str(patch)], cwd=repo,
@@ -192,7 +192,7 @@ def test_what_it_will_change_is_printed(tmp_path, examined, capsys):
 
     repo = make_repo(tmp_path / "repo")
     out = tmp_path / "instrument.patch"
-    rc = main(["--plan", str(repo / "onetrace-plan.yaml"), "--repo", str(repo), "--out", str(out)])
+    rc = main(["--style", "wrappers", "--plan", str(repo / "onetrace-plan.yaml"), "--repo", str(repo), "--out", str(out)])
     printed = capsys.readouterr().out
     wanted = ["pipeline/main.py", ".github/workflows/onetrace.yml", "intake", "retrieve", "answer",
               "data/corpus.json", "ctx.read_memory", "nothing was changed in place"]

@@ -75,7 +75,7 @@ def test_an_unresolvable_constants_name_is_refused_with_file_and_line(tmp_path, 
         "onetrace-plan.yaml": _with(RETRIEVE_INSTRUMENT, RETRIEVE_INSTRUMENT + "    constants: [top_k]\n")})
     examined(1, "an unresolvable constants name")
     with pytest.raises(Refused) as caught:
-        build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo)
+        build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo, style="wrappers")
     message = str(caught.value).replace("\\", "/")
     assert "pipeline/retrieval.py:7" in message and "'top_k'" in message and "stages[1].constants" in message
 
@@ -87,14 +87,14 @@ def test_a_dotted_constants_name_resolves_from_a_parameter(tmp_path, examined):
         "onetrace-plan.yaml": _with(RETRIEVE_INSTRUMENT, RETRIEVE_INSTRUMENT + "    constants: [request.lower]\n")})
     examined(1, "a dotted constants name")
     with pytest.raises(Refused) as caught:
-        build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo)
+        build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo, style="wrappers")
     assert "cannot be resolved" not in str(caught.value)
     assert "plan field stages[1].constants: " in str(caught.value) and "onetrace 0.2.0" in str(caught.value)
 
 
 def test_stages_that_record_no_settings_are_named(tmp_path, examined, capsys):
     repo = make_repo(tmp_path / "repo")
-    main(["--plan", str(repo / "onetrace-plan.yaml"), "--repo", str(repo), "--out", str(tmp_path / "p")])
+    main(["--style", "wrappers", "--plan", str(repo / "onetrace-plan.yaml"), "--repo", str(repo), "--out", str(tmp_path / "p")])
     lines = [l for l in capsys.readouterr().out.splitlines() if "no settings" in l]
     examined(len(lines), "lines naming stages without settings")
     assert lines == ["stages that record no settings (no config or constants in the plan): "

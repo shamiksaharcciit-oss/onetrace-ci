@@ -1,10 +1,15 @@
 """`onetrace-ci instrument`: turn a reviewed plan into a small patch that instruments a pipeline.
 
     onetrace-ci instrument --plan onetrace-plan.yaml --repo . --out instrument.patch
+    onetrace-ci instrument --plan onetrace-plan.yaml --repo . --style wrappers --out instrument.patch
 
 It writes a patch, never an edit in place, and prints what the patch will change. Applying it
 (`git apply instrument.patch`) is the user's step. Run on code it has already instrumented from
 the same plan, it writes an empty patch.
+
+Two styles: decorators, the default (onetrace 0.2.0's `@ot.run` and `@ot.stage`; see
+`instrument_decorators.py`), and wrappers, the Recorder-API code this module generates, described
+below. Both write the same workflow file, and share the plan-level checks in `build_patch`.
 
 The tool writes the boilerplate; people own the meaning. The patch records what the plan
 names. It does not find stages the plan does not list.
@@ -61,6 +66,8 @@ GATE_ACTION = "shamiksaharcciit-oss/onetrace-ci@4c1f9537a7009e15f7300dbf2b0b8a2a
 CHECKOUT_ACTION = "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"          # v4.4.0
 SETUP_PYTHON_ACTION = "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"  # v5.6.0
 WORKFLOW_PATH = ".github/workflows/onetrace.yml"
+#: The output styles: onetrace 0.2.0's decorators (the default), or Recorder-API wrappers.
+STYLES = ("decorators", "wrappers")
 CANDIDATE_RUN_ID = "onetrace-ci-candidate"
 MARKER = "# onetrace-ci instrument: generated from the plan"
 _MARKER_RE = re.compile(re.escape(MARKER) + r" \(sha256:([0-9a-f]{16})\)")
@@ -1212,8 +1219,11 @@ def _utf8_source(raw: bytes, rel: str) -> str:
         raise Refused(f"{rel}:{line}: not valid UTF-8; onetrace-ci writes UTF-8 patches") from None
 
 
-def build_patch(*, plan_path: Path, repo: Path) -> Result:
-    """The patch for `repo`, from the plan at `plan_path`, or `Refused`. Writes nothing."""
+def build_patch(*, plan_path: Path, repo: Path, style: str = "decorators") -> Result:
+    """The patch for `repo`, from the plan at `plan_path`, in `style` ("decorators", the default,
+    for onetrace 0.2.0; or "wrappers"), or `Refused`. Writes nothing."""
+    if style not in STYLES:
+        raise ValueError(f"style must be one of {STYLES}, got {style!r}")
     repo = repo.resolve()
     plan_path = plan_path.resolve()
     try:
@@ -1228,7 +1238,7 @@ def build_patch(*, plan_path: Path, repo: Path) -> Result:
         raise Refused(f"{plan_path}: the plan is outside --repo {repo}; the workflow reads it from the "
                       f"repository, so it must be committed there") from None
 
-    problems = _decorator_only(plan)
+    problems = _decorator_only(plan) if style == "wrappers" else []
     if problems:
         raise Refused(problems)
     for stage in plan.stages:
@@ -1236,7 +1246,7 @@ def build_patch(*, plan_path: Path, repo: Path) -> Result:
             if not (repo / f).is_file():
                 problems.append(f"plan field stages[{stage.index}].files: {f!r} does not exist under {repo}")
     idents: dict[str, str] = {}
-    for stage in plan.stages:
+    for stage in plan.stages if style == "wrappers" else ():
         ident = _slug_ident(stage.name)
         if ident in idents:
             problems.append(f"plan field stages[{stage.index}].name: {stage.name!r} and {idents[ident]!r} "
@@ -1259,6 +1269,46 @@ def build_patch(*, plan_path: Path, repo: Path) -> Result:
         raise Refused(problems)
 
     src = _Source(repo)
+    if style == "decorators":
+        from onetrace_ci.instrument_decorators import generate
+        changes, summary = generate(src, plan)
+        diffs = [_file_diff(rel, old, new) for rel, old, new in changes]
+        files = [rel for rel, _, _ in changes]
+    else:
+        diffs, files, summary = _wrapper_files(src, plan, plan_rel, repo)
+    workflow = workflow_text(plan, plan_rel)
+    workflow_file = repo / WORKFLOW_PATH
+    if workflow_file.is_file():
+        #: Git may check it out with CRLF (autocrlf=true, the Git for Windows default).
+        current = workflow_file.read_bytes().decode("utf-8").replace("\r\n", "\n")
+        if current != workflow:
+            raise Refused(f"{WORKFLOW_PATH}: already exists and differs from the workflow this plan "
+                          f"generates; onetrace-ci never overwrites it. Move it aside, then run again")
+        summary.append(f"{WORKFLOW_PATH}: already generated from this plan")
+    else:
+        diffs.append(_file_diff(WORKFLOW_PATH, None, workflow))
+        files.append(WORKFLOW_PATH)
+        summary.append(f"{WORKFLOW_PATH}: new. Runs the pipeline with ONETRACE_RUN_ID={CANDIDATE_RUN_ID}, "
+                       f"then the gate against {plan.ci.baseline}; permissions contents: read; the gate "
+                       f"action is pinned to {GATE_ACTION.split('@')[1][:12]}")
+    header = [f"onetrace-ci instrument: plan {plan_rel}, approved by {plan.approved_by}, "
+              f"{len(plan.stages)} stages"]
+    if style == "decorators":
+        header.append("style: decorators (onetrace 0.2.0's @ot.run and @ot.stage); --style wrappers "
+                      "generates the Recorder-API wrappers instead")
+    if plan.sign in (None, "none") and plan.anchor in (None, "none"):
+        why = ("the plan has no sign or anchor block" if plan.sign is None and plan.anchor is None
+               else "the plan chose none")
+        header.append(f"runs will be unsigned and unanchored: {why}")
+    bare = [s.name for s in plan.stages if s.function is not None and not s.config and not s.constants]
+    if bare:
+        header.append("stages that record no settings (no config or constants in the plan): "
+                      + ", ".join(repr(n) for n in bare))
+    return Result("".join(diffs), files, header + summary)
+
+
+def _wrapper_files(src: _Source, plan: InstrumentPlan, plan_rel: str, repo: Path) -> tuple[list, list, list]:
+    """The wrapper style's change to the entry module: (diffs, files, summary)."""
     fingerprint = plan_fingerprint(plan, plan_rel)
     entry_path, looked = src.module_file(plan.entry.module)
     if entry_path is None:
@@ -1266,8 +1316,6 @@ def build_patch(*, plan_path: Path, repo: Path) -> Result:
                       f"(looked for {', '.join(looked)})")
     entry_rel = entry_path.relative_to(repo).as_posix()
     entry_text = _utf8_source(entry_path.read_bytes(), entry_rel)
-    workflow = workflow_text(plan, plan_rel)
-    workflow_file = repo / WORKFLOW_PATH
 
     diffs, files, summary = [], [], []
     existing = _MARKER_RE.search(entry_text)
@@ -1290,31 +1338,7 @@ def build_patch(*, plan_path: Path, repo: Path) -> Result:
         diffs.append(_file_diff(entry_rel, entry_text, new_entry))
         files.append(entry_rel)
         summary.extend(_describe(analysis, entry_rel))
-
-    if workflow_file.is_file():
-        #: Git may check it out with CRLF (autocrlf=true, the Git for Windows default).
-        current = workflow_file.read_bytes().decode("utf-8").replace("\r\n", "\n")
-        if current != workflow:
-            raise Refused(f"{WORKFLOW_PATH}: already exists and differs from the workflow this plan "
-                          f"generates; onetrace-ci never overwrites it. Move it aside, then run again")
-        summary.append(f"{WORKFLOW_PATH}: already generated from this plan")
-    else:
-        diffs.append(_file_diff(WORKFLOW_PATH, None, workflow))
-        files.append(WORKFLOW_PATH)
-        summary.append(f"{WORKFLOW_PATH}: new. Runs the pipeline with ONETRACE_RUN_ID={CANDIDATE_RUN_ID}, "
-                       f"then the gate against {plan.ci.baseline}; permissions contents: read; the gate "
-                       f"action is pinned to {GATE_ACTION.split('@')[1][:12]}")
-    header = [f"onetrace-ci instrument: plan {plan_rel}, approved by {plan.approved_by}, "
-              f"{len(plan.stages)} stages"]
-    if plan.sign in (None, "none") and plan.anchor in (None, "none"):
-        why = ("the plan has no sign or anchor block" if plan.sign is None and plan.anchor is None
-               else "the plan chose none")
-        header.append(f"runs will be unsigned and unanchored: {why}")
-    bare = [s.name for s in plan.stages if s.function is not None and not s.config and not s.constants]
-    if bare:
-        header.append("stages that record no settings (no config or constants in the plan): "
-                      + ", ".join(repr(n) for n in bare))
-    return Result("".join(diffs), files, header + summary)
+    return diffs, files, summary
 
 
 def _decorator_only(plan: InstrumentPlan) -> list[str]:
@@ -1362,9 +1386,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan", required=True, type=Path)
     parser.add_argument("--repo", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--style", choices=STYLES, default="decorators",
+                        help="decorators (the default: onetrace 0.2.0's @ot.run and @ot.stage), or "
+                             "wrappers (Recorder-API wrappers in the entry function)")
     args = parser.parse_args(argv)
     try:
-        result = build_patch(plan_path=args.plan, repo=args.repo)
+        result = build_patch(plan_path=args.plan, repo=args.repo, style=args.style)
     except Refused as e:
         print(format_refusal("instrument", e.problems), file=sys.stderr)
         return 1

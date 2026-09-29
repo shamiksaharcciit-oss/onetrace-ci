@@ -51,7 +51,7 @@ def run_pipeline(monkeypatch):
 @pytest.fixture
 def instrumented(tmp_path):
     repo = make_repo(tmp_path / "repo")
-    result = build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo)
+    result = build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo, style="wrappers")
     _apply(repo, result.patch, tmp_path / "instrument.patch")
     return repo
 
@@ -118,7 +118,7 @@ def test_the_instrumented_run_returns_what_the_original_returned(tmp_path, instr
 def test_running_the_command_twice_gives_an_empty_second_patch(tmp_path, examined, capsys):
     repo = make_repo(tmp_path / "repo")
     first, second = tmp_path / "first.patch", tmp_path / "second.patch"
-    args = ["--plan", str(repo / "onetrace-plan.yaml"), "--repo", str(repo)]
+    args = ["--style", "wrappers", "--plan", str(repo / "onetrace-plan.yaml"), "--repo", str(repo)]
     assert main(args + ["--out", str(first)]) == 0
     _apply(repo, first.read_text(encoding="utf-8"), tmp_path / "applied.patch")
     capsys.readouterr()
@@ -136,7 +136,7 @@ def test_a_different_plan_on_instrumented_code_is_refused_not_silently_skipped(i
                                  'rederivable_note: "a different note"'), encoding="utf-8")
     examined(1, "a changed plan over instrumented code")
     with pytest.raises(Refused, match=r"pipeline[/\\]main\.py.*different plan"):
-        build_patch(plan_path=plan, repo=instrumented)
+        build_patch(plan_path=plan, repo=instrumented, style="wrappers")
 
 
 def test_an_exception_in_a_stage_is_recorded_raised_and_the_run_still_closed(tmp_path, run_pipeline,
@@ -144,7 +144,7 @@ def test_an_exception_in_a_stage_is_recorded_raised_and_the_run_still_closed(tmp
     install_read_memory_if_missing()
     repo = make_repo(tmp_path / "repo", {
         "pipeline/llm.py": "def answer(request, passages):\n    raise ValueError('the model is down')\n"})
-    result = build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo)
+    result = build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo, style="wrappers")
     _apply(repo, result.patch, tmp_path / "instrument.patch")
     with pytest.raises(ValueError, match="the model is down"):
         run_pipeline(repo, "t4")

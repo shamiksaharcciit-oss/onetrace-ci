@@ -17,7 +17,7 @@ def test_absent_blocks_mean_unsigned_and_unanchored_and_say_so(tmp_path, examine
     plan = parse_instrument_plan(PLAN, source="<t>")
     assert (plan.sign, plan.anchor, plan.trust) == (None, None, None)
     repo = make_repo(tmp_path / "repo")
-    main(["--plan", str(repo / "onetrace-plan.yaml"), "--repo", str(repo), "--out", str(tmp_path / "p")])
+    main(["--style", "wrappers", "--plan", str(repo / "onetrace-plan.yaml"), "--repo", str(repo), "--out", str(tmp_path / "p")])
     lines = [l for l in capsys.readouterr().out.splitlines() if "unsigned" in l]
     examined(len(lines), "lines about signing and anchoring")
     assert lines == ["runs will be unsigned and unanchored: the plan has no sign or anchor block"]
@@ -71,7 +71,7 @@ def test_a_trust_file_missing_from_the_repo_is_refused(tmp_path, examined):
     repo = make_repo(tmp_path / "repo", {"onetrace-plan.yaml": PLAN + SIGN + TRUST})
     examined(1, "a plan whose trust file does not exist")
     with pytest.raises(Refused, match=r"plan field trust\.file: '\.onetrace/trusted_keys\.txt' does not exist"):
-        build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo)
+        build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo, style="wrappers")
 
 
 def test_signing_or_anchoring_waits_for_the_sdk_interface_it_needs(tmp_path, examined):
@@ -82,4 +82,4 @@ def test_signing_or_anchoring_waits_for_the_sdk_interface_it_needs(tmp_path, exa
                                          ".onetrace/trusted_keys.txt": "ci-test-key  ed25519:AAAA\n"})
     examined(1, "a complete signing plan")
     with pytest.raises(Refused, match=r"plan field sign: .*onetrace 0\.2\.0"):
-        build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo)
+        build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo, style="wrappers")

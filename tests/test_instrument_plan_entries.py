@@ -156,5 +156,5 @@ def test_the_wrapper_style_refuses_what_only_decorators_generate(case, tmp_path,
     repo = make_repo(tmp_path / "repo", {"onetrace-plan.yaml": plan})
     examined(1, f"a wrapper-style plan with {case}")
     with pytest.raises(Refused) as caught:
-        build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo)
+        build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo, style="wrappers")
     assert "decorator" in str(caught.value) and case in str(caught.value), str(caught.value)

@@ -1,10 +1,10 @@
 """A small un-instrumented pipeline whose entry takes no parameters, for `instrument`'s decorator
-output (SDK spec edition 8, Part C). Written into a temporary repository for each test.
+output. Written into a temporary repository for each test.
 
 `stub_sdk` is a stand-in for onetrace 0.2.0's decorator API, which is not released yet: it
-records what each decorator and helper is called with, under the SDK spec's names, and changes
+records what each decorator and helper is called with, under the SDK's names, and changes
 nothing the decorated functions do. It shows that the generated code imports, and passes the
-plan's fields to the arguments the SDK spec names; it is not the SDK.
+plan's fields to the arguments the SDK names; it is not the SDK.
 """
 from __future__ import annotations
 

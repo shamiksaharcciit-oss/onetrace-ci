@@ -75,7 +75,7 @@ def test_what_it_cannot_guess_is_required(tmp_path, examined):
 
 def test_its_workflow_is_the_one_instrument_writes_for_the_same_ci(tmp_path, examined):
     repo = make_repo(tmp_path / "repo")
-    patched = build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo).patch
+    patched = build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo, style="wrappers").patch
     added = patched.split(f"+++ b/{WORKFLOW_PATH}\n", 1)[1]
     from_instrument = "".join(l[1:] + "\n" for l in added.splitlines() if l.startswith("+"))
     ci = re.search(r"ci:\n  install: (.*)\n  run: (.*)\n  baseline: (.*)\n", PLAN)

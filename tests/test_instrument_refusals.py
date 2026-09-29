@@ -186,13 +186,13 @@ def test_each_refusal_names_its_target_and_writes_no_patch(case, tmp_path, exami
     examined(len(expected), f"substrings the refusal must name: {case}")
 
     with pytest.raises(Refused) as caught:
-        build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo)
+        build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo, style="wrappers")
     message = str(caught.value).replace("\\", "/")
     for want in expected:
         assert want in message, f"{want!r} not named in:\n{message}"
 
     #: And through the command itself: exit 1, the same message, and no patch file.
-    rc = main(["--plan", str(repo / "onetrace-plan.yaml"), "--repo", str(repo), "--out", str(out)])
+    rc = main(["--style", "wrappers", "--plan", str(repo / "onetrace-plan.yaml"), "--repo", str(repo), "--out", str(out)])
     err = capsys.readouterr().err.replace("\\", "/")
     assert rc == 1
     assert "refused" in err and expected[0] in err

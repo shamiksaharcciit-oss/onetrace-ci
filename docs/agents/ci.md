@@ -9,7 +9,9 @@ baseline; it does not prove the output is correct.
 - **The code is already instrumented** (by hand, or with onetrace's decorators): run
   `onetrace-ci init-ci`. It writes the workflow and a minimal plan, and nothing else.
 - **The code is not instrumented yet, and a person has written a plan** naming the stages:
-  run `onetrace-ci instrument`. It writes a patch for review, never an edit in place.
+  run `onetrace-ci instrument`. It writes a patch for review, never an edit in place. Its
+  default style writes onetrace 0.2.0's decorators; with a released onetrace 0.1.x, pass
+  `--style wrappers`.
 - **Nobody knows the stages yet**: run `onetrace-ci discover` with the project's own tests. It
   drafts the plan, with every meaning field a `DECIDE:` question. Show the person the report
   and the questions; never answer them yourself.
