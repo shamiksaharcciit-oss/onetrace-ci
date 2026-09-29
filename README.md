@@ -440,7 +440,9 @@ A run or span is placed where your code started it, from the stack at that
 moment. A LangChain run started from async code (`ainvoke`, `astream`), or
 while an event loop runs in the thread, isn't seen: the observer's handler
 asks LangChain to skip it there, so that it never takes a worker from your
-thread pool. Nor is any run or span started where none of your code is on
+thread pool. The one exception is LangChain's legacy `on_text` event, which
+can't be skipped this way; langchain-core itself no longer sends it. Nor is
+any run or span started where none of your code is on
 the stack. One started in an asyncio task is placed where the event loop was
 started.
 
