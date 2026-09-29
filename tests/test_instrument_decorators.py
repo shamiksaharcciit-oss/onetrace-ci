@@ -285,12 +285,13 @@ REFUSED = {
     "a stage mapped over a pool": ({"pipeline/main.py": MAIN.replace(
         "    passages = retrieve()\n",
         "    import concurrent.futures\n    with concurrent.futures.ThreadPoolExecutor() as pool:\n"
-        "        list(pool.map(retrieve, []))\n    passages = retrieve()\n")},
-        ["'retrieve'", "map", "overlap", "waits"]),
+        "        passages = list(pool.map(retrieve, []))\n"),
+        "onetrace-plan.yaml": PLAN.replace('    rederivable: "false"\n', '    trust: operator-authored\n    rederivable: "false"\n')},
+        ["'retrieve'", "pipeline/main.py:10", "(map)", "overlap", "waits"]),
     "a decorated function the plan does not name": (
         {"pipeline/llm.py": 'import onetrace as ot\n\n\n@ot.stage("summary", rederivable=False)\n'
                             'def summarise(text):\n    return text\n\n\n' + LLM},
-        ["'summary'", "summarise", "already"]),
+        ["'summary'", "summarise", "already", "the plan names no stage for it"]),
     "a stage called twice without repeats": ({"pipeline/main.py": MAIN.replace(
         "    passages = retrieve()\n", "    passages = retrieve()\n    passages = retrieve()\n")}, ["repeats: true"]),
     "a stage given a value no stage made, without trust": ({"pipeline/main.py": MAIN.replace(
