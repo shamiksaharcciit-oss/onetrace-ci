@@ -1,7 +1,39 @@
-# Pinned by hash: nothing outside the standard library besides onetrace
-# itself (which pulls in onetrace-verify).
+# Pinned by hash: onetrace itself (which pulls in onetrace-verify) and LibCST,
+# which `onetrace-ci instrument` uses to transform code without losing its
+# formatting. LibCST's own YAML dependency is pinned with it, for CPython
+# 3.10-3.13 on Windows x86-64, Linux x86-64 and macOS arm64.
 # Install with: pip install --require-hashes -r requirements.lock
 onetrace==0.1.1 \
     --hash=sha256:eccc509e80ac782dd89aa8e2f84d34aa21bc582cc84e306d362340b361e3d6cf
 onetrace-verify==0.1.1 \
     --hash=sha256:cf259b4f281f2977836dbfbf0a312574f35d6e8eec9a93de997c96094fa1f624
+libcst==1.9.0 \
+    --hash=sha256:5705f664266742b8d9323db714f58cf06a6cde739eb09fd9ca31cd233f9806e5 \
+    --hash=sha256:cc84aee3c293a012db722aa2d6ea87be524646852684a5a4e54c1fb98ea9072f \
+    --hash=sha256:a6615b036694f6906e30dc018b5b34898cff7ff760ab549f9dea1ada4f53495b \
+    --hash=sha256:3cdbafbc992b38ea005ef37e20243c4177879020c82d414789fbb7fa22d6d3a9 \
+    --hash=sha256:951f13c193e590fc88c9582a5341a130fe53ecece51043cff4bd54e25a5e022d \
+    --hash=sha256:77d9303572cf0fbd0a2eb71aff167a4246541f43bf58b781b35b9d0bbab80ddc \
+    --hash=sha256:cd1a3500c41784075c4946a995d5ad89f68fa0d226b63ff3c4d78f6ea6dd23e5 \
+    --hash=sha256:8d731abe1307720ea1a52d447555e8443a6d130e0e520243c0634a58f6edbc9d \
+    --hash=sha256:b755ed4a4bc2faee849b54820023137d60d4c199e0a0822f0ff0c1bc49e49b48 \
+    --hash=sha256:b8b9df30f524317b097dc53065b25dda33d6a4cc3c7c8bf4fc83ca7559c58cc0 \
+    --hash=sha256:8504b422c95676a8c27b517e1ac01413ece91bf356865c587ca9bdcd5708a2f7 \
+    --hash=sha256:4d382fba04077eb556a1ea4295a4482e192aa93639c5a07ba0885841965ea0c0
+pyyaml==6.0.3 ; python_version < "3.13" \
+    --hash=sha256:02ea2dfa234451bbb8772601d7b8e426c2bfa197136796224e50e35a78777956 \
+    --hash=sha256:9c7708761fccb9397fe64bbc0395abcae8c4bf7b0eac081e12b809bf47700d0b \
+    --hash=sha256:bdb2c67c6c1390b63c6ff89f210c8fd09d9a1217a465701eac7316313c915e4c \
+    --hash=sha256:652cb6edd41e718550aad172851962662ff2681490a8a711af6a4d288dd96824 \
+    --hash=sha256:b8bb0864c5a28024fac8a632c443c87c5aa6f215c0b126c449ae1a150412f31d \
+    --hash=sha256:9f3bfb4965eb874431221a3ff3fdcddc7e74e3b07799e0e84ca4a0f867d449bf \
+    --hash=sha256:fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0 \
+    --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc \
+    --hash=sha256:5fcd34e47f6e0b794d17de1b4ff496c00986e1c83f7ab2fb8fcfe9616ff7477b
+pyyaml-ft==8.0.0 ; python_version == "3.13" \
+    --hash=sha256:30c5f1751625786c19de751e3130fc345ebcba6a86f6bddd6e1285342f4bbb69 \
+    --hash=sha256:06237267dbcab70d4c0e9436d8f719f04a51123f0ca2694c00dd4b68c338e40b \
+    --hash=sha256:58e1015098cf8d8aec82f360789c16283b88ca670fe4275ef6c48c5e30b22a96 \
+    --hash=sha256:8d445bf6ea16bb93c37b42fdacfb2f94c8e92a79ba9e12768c96ecde867046d1 \
+    --hash=sha256:bd48d639cab5ca50ad957b6dd632c7dd3ac02a1abe0e8196a3c24a52f5db3f7a \
+    --hash=sha256:de04cfe9439565e32f178106c51dd6ca61afaa2907d143835d501d84703d3793

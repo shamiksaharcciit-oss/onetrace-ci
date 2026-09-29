@@ -131,7 +131,7 @@ def test_a_refused_answer_fails_verify(make_run, write_plan, tmp_path, examined)
 def test_unapproved_extra_plan_keys_are_named_in_the_summary(make_run, write_plan, tmp_path, examined):
     baseline = make_run("baseline")
     run = make_run("candidate")
-    plan = write_plan("plan.yaml", "approved_by: alice\nsome_future_key: yes\n")
+    plan = write_plan("plan.yaml", "approved_by: alice\nsome_future_key: \"yes\"\n")
     run_gate(run=run, baseline=baseline, plan_path=plan, runner=None,
             out=tmp_path / "out", review_exit_zero=False)
     summary = (tmp_path / "out" / "summary.md").read_text()
@@ -203,3 +203,20 @@ def test_sabotage_dropping_the_coverage_check_lets_an_unapproved_boundary_throug
         out=tmp_path / "out2", review_exit_zero=False)
     assert real_exit_code == 1
     assert {f.check: f.verdict for f in real_findings}["coverage"] == FAIL
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("value", ["None", "none", "NONE", "Null", '""', "~"])
+def test_an_approver_that_says_nobody_fails(value, make_run, write_plan, tmp_path, examined):
+    """`approved_by: None` names nobody. The first plan reader read it as null (unapproved);
+    YAML reads it as the text "None", which must not count as an approver either."""
+    baseline = make_run("baseline")
+    run = make_run("candidate")
+    plan = write_plan("plan.yaml", f"approved_by: {value}\n")
+    exit_code, findings = run_gate(run=run, baseline=baseline, plan_path=plan,
+                                   runner=None, out=tmp_path / "out", review_exit_zero=False)
+    examined(1, f"approved_by: {value}")
+    assert exit_code == 1
+    assert {f.check: f.verdict for f in findings}["plan.approved_by"] == FAIL

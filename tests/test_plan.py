@@ -55,17 +55,42 @@ def test_reproduce_and_defaults_when_absent(examined):
     "approved_by:\n  weird_indent: true\n",
     "  leading_indent: true\n",
     "not a key value line at all\n",
-    "approved_boundaries: [a, b]\n",
+    "approved_boundaries: [a, [b]]\n",       # a nested flow list
     "approved_by: |\n  a block scalar\n",
     "approved_by: >\n  a folded scalar\n",
     "approved_by: &anchor value\n",
     "approved_by: *alias\n",
     "known_limits:\n  - name: retrieve\n",   # a list item that is itself a mapping
+    "known_limits: [true]\n",                # a list item that is not a stage name
+    "approved_boundaries: retrieve\n",       # a scalar where a list is required
 ])
 def test_outside_the_supported_subset_is_refused(bad, examined):
     examined(1, f"plan text outside the supported subset: {bad!r}")
     with pytest.raises(PlanError):
         parse_plan_text(bad, source="<test>")
+
+
+def test_a_flow_list_reads_the_same_as_a_block_list(examined):
+    """The instrument plan's own example writes `approved_boundaries: []`, so a one-line flow
+    list is part of the subset. It means exactly what the block form means."""
+    flow = parse_plan_text("approved_by: a\napproved_boundaries: [retrieve, answer]\n", source="<t>")
+    block = parse_plan_text("approved_by: a\napproved_boundaries:\n  - retrieve\n  - answer\n",
+                            source="<t>")
+    empty = parse_plan_text("approved_by: a\napproved_boundaries: []\n", source="<t>")
+    examined(3, "the same list written flow, block and empty")
+    assert flow == block
+    assert flow.approved_boundaries == ("retrieve", "answer")
+    assert empty.approved_boundaries == ()
+
+
+def test_the_instrument_plan_keys_are_not_reported_as_ignored(examined):
+    """`entry`, `run_dir`, `stages` and `ci` belong to the plan format (`onetrace-ci instrument`
+    reads them); the gate does not use them, but they are not typos either."""
+    text = ("approved_by: a\nentry: m:run\nrun_dir: runs/{run_id}\nstages:\n  - name: s\n"
+            "ci:\n  run: python m.py\n")
+    plan = parse_plan_text(text, source="<t>")
+    examined(4, "instrument plan keys read by the gate's reader")
+    assert plan.ignored_keys == ()
 
 
 def test_the_refusal_names_the_offending_line_number(examined):

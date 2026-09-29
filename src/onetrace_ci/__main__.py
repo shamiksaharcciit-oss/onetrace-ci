@@ -1,4 +1,4 @@
-"""`onetrace-ci`: phase 1 is `gate` and `baseline propose`."""
+"""`onetrace-ci`: `gate`, `baseline propose` and `instrument`."""
 from __future__ import annotations
 
 import sys
@@ -19,6 +19,11 @@ onetrace-ci {version}
   onetrace-ci baseline propose --from R --out B.new
                     write a candidate baseline for a human to commit,
                     together with the diff that justifies it.
+  onetrace-ci instrument --plan P --repo R --out F
+                    write a patch (never an edit in place) that instruments
+                    the pipeline the reviewed plan P describes, and print
+                    what it will change. Exit 0 with the patch written
+                    (empty when already instrumented from P), 1 refused.
 """
 
 
@@ -33,6 +38,9 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[:2] == ["baseline", "propose"]:
         from onetrace_ci.baseline import main as baseline_main
         return baseline_main(argv[2:])
+    if argv and argv[:1] == ["instrument"]:
+        from onetrace_ci.instrument import main as instrument_main
+        return instrument_main(argv[1:])
     print(USAGE.format(version=__version__), file=sys.stderr)
     return 2
 

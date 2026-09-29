@@ -4,18 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "onetrace-ci"
-version = "0.1.0"
-description = "CI gate for onetrace records, phase 1: turns onetrace's existing commands into one CI verdict. No observer, no inference, no codemod -- onetrace itself is never modified."
+version = "0.2.0.dev0"
+description = "CI tools for onetrace records: a gate that turns onetrace's existing commands into one CI verdict, and an instrumenter that turns a reviewed plan into a patch. onetrace itself is never modified."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Shamik Saha" }]
 
-# Pinned by hash in requirements.lock; nothing else outside the standard
-# library. onetrace pulls in onetrace-verify itself.
+# Pinned by hash in requirements.lock. onetrace pulls in onetrace-verify
+# itself; LibCST (for `onetrace-ci instrument`) pulls in its own YAML reader.
 dependencies = [
     "onetrace",
+    "libcst",
 ]
 
 [project.optional-dependencies]

@@ -1,12 +1,14 @@
 # onetrace-ci
 
-Phase 1 of the onetrace CI instrumenter: a gate for code that is **already
-instrumented**. No observer, no inference, no codemod — those are phases 2
-and 3. This turns `onetrace`'s existing commands (`onetrace-verify`,
-`onetrace diff`, `onetrace localize`, `onetrace reproduce`) into one CI
-verdict. **`onetrace` itself is never modified**, and this package depends
-on nothing outside the standard library besides `onetrace` (pinned by
-hash — see `requirements.lock`). Licensed Apache-2.0 — see `LICENSE`.
+The onetrace CI instrumenter. `onetrace-ci gate` turns `onetrace`'s existing
+commands (`onetrace-verify`, `onetrace diff`, `onetrace localize`,
+`onetrace reproduce`) into one CI verdict for code that is already
+instrumented. `onetrace-ci instrument` writes a reviewable patch that
+instruments a pipeline from a plan a person wrote and approved — see
+[Instrument from a plan](#instrument-from-a-plan). **`onetrace` itself is
+never modified**. This package depends on `onetrace` and on LibCST (for
+`instrument`), both pinned by hash — see `requirements.lock`. Licensed
+Apache-2.0 — see `LICENSE`.
 
 ## What this does *not* claim
 
@@ -92,12 +94,14 @@ command, exit code and report path) and `D/summary.md`.
 
 ## The plan file, `onetrace-plan.yaml`
 
-Read with a deliberately restricted, stdlib-only YAML-subset parser (see
-`src/onetrace_ci/plan.py` for exactly what it supports and refuses) — a real
-YAML library would be a dependency this package's own scope forbids. A
-construct outside that subset (a block scalar, an anchor, a nested mapping,
-a flow-style list) is refused outright, naming the line, never misread as
-something else. Five keys are read:
+Read with a deliberately restricted YAML-subset reader (see
+`src/onetrace_ci/yamlsubset.py` for exactly what it supports and refuses):
+block mappings and lists, one-line flow lists and mappings of plain or
+quoted scalars, and comments. What it accepts it reads exactly as a real
+YAML parser does, except that it never produces a number. A construct
+outside that subset (a block scalar, an anchor or alias, a tag, a nested
+flow collection, a duplicate key) is refused outright, naming the line,
+never misread as something else. The gate reads five keys:
 
 ```yaml
 format: onetrace-ci-plan/0.1
@@ -109,9 +113,11 @@ reproduce: false
 approved_by: alice
 ```
 
-Any other top-level key is ignored for gating purposes, but named in the
-summary. A missing or empty `approved_by` is a **fail**: a gate against an
-unapproved plan proves nothing.
+The keys `onetrace-ci instrument` reads (`entry`, `run_dir`, `stages`, `ci`)
+belong to the same file; the gate does not use them. Any other top-level key
+is ignored for gating purposes, but named in the summary. A missing or empty
+`approved_by` is a **fail**: a gate against an unapproved plan proves
+nothing.
 
 ## `onetrace-ci baseline propose`
 
@@ -133,12 +139,141 @@ job summary, uploads the run and report directories as an artifact. Needs
 only `contents: read` — no PR comment and no SARIF in phase 1, since both
 need write permissions a fork PR does not have.
 
+## Instrument from a plan
+
+```
+onetrace-ci instrument --plan onetrace-plan.yaml --repo . --out instrument.patch
+```
+
+**The patch records what your plan names; it does not find stages you
+didn't list.** The tool writes the boilerplate; you own the meaning.
+
+A person writes the plan: which functions are stages and in what order,
+where each stage's inputs come from and how far they are trusted, whether
+each stage can be re-derived, and which boundaries are approved. The command
+turns that plan into a **patch — never an edit in place** — and prints what
+the patch will change. Applying it is your step:
+
+```
+git apply instrument.patch
+```
+
+Run again on code it has already instrumented from the same plan, it writes
+an empty patch. Run on code instrumented from a *different* plan, it refuses
+and asks you to revert the earlier patch first.
+
+### The plan
+
+```yaml
+approved_by: alice
+entry: pipeline.main:run            # the function that is one run
+run_dir: runs/{run_id}              # where each run is written
+stages:
+  - name: intake                    # no function: records entry parameters
+    memory_inputs: [request]        #   digests only, with ctx.read_memory
+    trust: externally-sourced
+    rederivable: "true"
+  - name: retrieve
+    function: pipeline.retrieval:retrieve
+    instrument: {name: bm25, package: rank_bm25}   # version read at run time
+    inputs: [intake]                # optional; the default is the previous stage
+    files: [data/corpus.json]       # read with ctx.read_external
+    trust: operator-authored
+    rederivable: "true"
+  - name: answer
+    function: pipeline.llm:answer
+    instrument: {name: model-call, package: openai}
+    rederivable: "false"
+    rederivable_note: "hosted model; sampling not reproducible"
+approved_boundaries: []
+ci:
+  install: pip install --require-hashes -r requirements.lock
+  run: python -m pipeline.demo      # runs the pipeline on your CI fixtures
+  baseline: runs/baseline           # the committed baseline run
+```
+
+**Every field that carries meaning is written by a person**: the stages and
+their order, each trust class, whether each stage can be re-derived, the
+approved boundaries (even when there are none), and the files. If one is
+missing, the command refuses and names the field — all of them at once — and
+never fills one in by guessing. A `DECIDE:` question left in any field is
+refused the same way. `instrument` also takes an optional `kind`; without
+one, the kind is `python-package`, which says only how the version is found.
+
+### What the patch does
+
+In the entry module only:
+
+- **one `Recorder` per run**, created inside the entry function, with
+  `close()` in a `finally`. Never a module-level recorder;
+- **each planned function becomes a stage, in the declared order.** Its call
+  site in the entry function is pointed at a wrapper, defined inside the
+  entry function, that reads the stage's inputs (the outputs of the stages
+  it names, and its files, with `ctx.read_external`), calls your function
+  unchanged, and stores its return value as the stage's output — bytes as
+  they are, text as UTF-8, anything else as sorted JSON. A return value JSON
+  cannot hold stops the run, loudly;
+- **an intake stage** records the entry parameters it names with
+  `ctx.read_memory`: their digests, never their values (onetrace 0.1.2);
+- **instrument versions** are read at run time with
+  `importlib.metadata.version(package)`, never written into the code;
+- every run gets its id from `ONETRACE_RUN_ID` when that is set, and a new
+  id otherwise, and is written under the repository it runs from, in
+  `run_dir` (which must hold `{run_id}`, so each run has its own folder).
+
+Three limits follow from that, stated plainly:
+
+- **The pipeline runs from its checkout.** Installed somewhere without its
+  plan (a non-editable install), the instrumented entry function stops at
+  once and says so, rather than writing runs into `site-packages`.
+- **`ci.run` runs the pipeline once.** The workflow gates one run against
+  one baseline; a second call in the same process with the same
+  `ONETRACE_RUN_ID` is refused by the SDK, because a run folder is written
+  only once.
+- **Stage values must be recordable.** A stage whose arguments or return
+  value JSON cannot hold (a `set`, an arbitrary object, `NaN`) stops the run
+  with an error that names the stage. The un-instrumented code would have
+  carried on; a record that silently skipped the value would not be a
+  record of the run.
+
+It also adds `.github/workflows/onetrace.yml`, which installs and runs the
+pipeline (`ci.install`, `ci.run`, with `ONETRACE_RUN_ID=onetrace-ci-candidate`)
+and then runs the `onetrace-ci gate` action against `ci.baseline`. Its only
+permission is `contents: read`, and every action it uses is pinned to a
+commit. It adds nothing else.
+
+To make the first baseline, run the instrumented pipeline once, then
+`onetrace-ci baseline propose --from runs/<that run> --out runs/baseline`,
+review it, and commit it.
+
+### What it refuses
+
+Anything it cannot handle safely, with the file and line (or the plan
+field), and no patch is written:
+
+- a missing meaning field in the plan, or a `DECIDE:` question left open;
+- a function it cannot resolve, a class method, a lambda, a generator, an
+  async function, or a name bound to anything but a function definition;
+- a nested stage call — in the entry function's arguments, or one stage's
+  body calling another;
+- a stage called conditionally (`if`, `and`/`or`, a chained comparison), in a
+  loop, in a `try` block, in an `assert` (which `python -O` removes), in a
+  lambda or comprehension, more than once, out of the declared order, or
+  never at all — and two stages called in one statement, so the order they
+  run in is always the order they are written;
+- a stage used as a value, or any other dynamic dispatch (`getattr(...)()`,
+  `table[key]()`), a stage's name shadowed by a parameter or a local, and a
+  star import;
+- a module that exists both as a file and as a package;
+- a `Recorder` already created at module level, or inside the entry function;
+- a name the generated code reserves (`_onetrace_…`);
+- an entry module that is not UTF-8, and plan paths with backslashes.
+
 ## What this is not
 
-No observer (nothing watches your pipeline or infers instrumentation for
-you — you call `onetrace`'s own SDK yourself, in your own code, same as
-today). No codemod. No PR comment, no SARIF annotation, no PyPI or
-Marketplace publication in this phase.
+No observer (nothing watches your pipeline or infers its stages for you —
+with `instrument`, a person still writes the plan). No PR comment, no SARIF
+annotation, no PyPI or Marketplace publication.
 
 ## License
 

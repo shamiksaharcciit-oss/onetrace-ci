@@ -1,0 +1,161 @@
+diff --git a/pipeline/main.py b/pipeline/main.py
+--- a/pipeline/main.py
++++ b/pipeline/main.py
+@@ -3,7 +3,116 @@
+ from pipeline.retrieval import retrieve
+ 
+ 
++# onetrace-ci instrument: generated from the plan (sha256:43e85cea03b40cbc).
++# Change the plan and run `onetrace-ci instrument` again, rather than editing this by hand.
++import hashlib as _onetrace_hashlib
++import importlib.metadata as _onetrace_metadata
++import json as _onetrace_json
++import os as _onetrace_os
++import time as _onetrace_time
++from pathlib import Path as _OnetracePath
++
++from onetrace.emit import Instrument as _OnetraceInstrument
++from onetrace.emit import Recorder as _OnetraceRecorder
++
++_ONETRACE_ROOT = _OnetracePath(__file__).resolve().parents[1]
++_ONETRACE_PLAN = "onetrace-plan.yaml"
++
++
++def _onetrace_root():
++    """The repository this module runs from: where its plan is. A run is written under it."""
++    if not (_ONETRACE_ROOT / _ONETRACE_PLAN).is_file():
++        raise RuntimeError(
++            "onetrace: {} is not running from its repository (no {} under {}); run it from a "
++            "checkout, or install it in editable mode".format(__file__, _ONETRACE_PLAN, _ONETRACE_ROOT))
++    return _ONETRACE_ROOT
++
++
++def _onetrace_run_id():
++    """ONETRACE_RUN_ID when it is set; otherwise a new id, sortable and safe in a path."""
++    return _onetrace_os.environ.get("ONETRACE_RUN_ID") or "{}-{}".format(
++        _onetrace_time.strftime("%Y%m%dT%H%M%SZ", _onetrace_time.gmtime()),
++        _onetrace_os.urandom(4).hex())
++
++
++def _onetrace_bytes(value):
++    """A stage value as bytes and a media type: bytes as they are, text as UTF-8, anything
++    else as sorted, compact JSON. A value JSON cannot hold stops the run, loudly."""
++    if isinstance(value, (bytes, bytearray)):
++        return bytes(value), "application/octet-stream"
++    if isinstance(value, str):
++        return value.encode("utf-8"), "text/plain"
++    text = _onetrace_json.dumps(value, sort_keys=True, ensure_ascii=False,
++                                separators=(",", ":"), allow_nan=False)
++    return text.encode("utf-8"), "application/json"
++
++
++def _onetrace_write(ctx, stem, value):
++    """Store a stage's return value as its output artifact."""
++    try:
++        data, media_type = _onetrace_bytes(value)
++    except (TypeError, ValueError) as e:
++        raise TypeError("onetrace: stage {!r} returned a value that cannot be recorded ({}); return "
++                        "bytes, text, or JSON-compatible data".format(ctx.name, e)) from e
++    suffix = {"application/json": ".json", "text/plain": ".txt"}.get(media_type, ".bin")
++    return ctx.write(stem + suffix, data, media_type)
++
++
++def _onetrace_read_memory(ctx, name, value, trust_class):
++    """Record an in-memory input by its digest; the value is not stored. The one place this
++    code calls ctx.read_memory."""
++    try:
++        data, media_type = _onetrace_bytes(value)
++    except (TypeError, ValueError) as e:
++        raise TypeError("onetrace: memory input {!r} of stage {!r} cannot be recorded ({}); pass "
++                        "bytes, text, or JSON-compatible data".format(name, ctx.name, e)) from e
++    ctx.read_memory(data, media_type, name=name, trust_class=trust_class)
++    digest = "sha256:" + _onetrace_hashlib.sha256(data).hexdigest()
++    return {"bytes": str(len(data)), "digest": digest, "media_type": media_type}
++
++
+ def run(request):
+     """Retrieve, then answer."""
+-    passages = retrieve(request)
+-    return answer(request, passages)
++    _onetrace_run = _onetrace_run_id()
++    _onetrace_rec = _OnetraceRecorder(
++        _onetrace_root() / "runs/{run_id}".format(run_id=_onetrace_run),
++        declared_stages=["intake", "retrieve", "answer"],
++        manifest=_OnetracePath(__file__), policy="fail-closed",
++        anchor_reason="epoch anchoring is not implemented", run_id=_onetrace_run)
++    _onetrace_out = {}
++    try:
++        @_onetrace_rec.stage("intake", _OnetraceInstrument(
++            "onetrace.read_memory", "intake", _onetrace_metadata.version("onetrace"),
++            {"memory_inputs": ["request"]}, rederivable="true"))
++        def _onetrace_stage_intake(_onetrace_ctx):
++            _onetrace_memory = {
++                "request": _onetrace_read_memory(_onetrace_ctx, "request", request, "externally-sourced"),
++            }
++            _onetrace_out["intake"] = _onetrace_ctx.write_json(
++                "intake.json", {"memory_inputs": _onetrace_memory})
++
++        @_onetrace_rec.stage("retrieve", _OnetraceInstrument(
++            "word-overlap", "python-package", _onetrace_metadata.version("onetrace-verify"),
++            {"package": "onetrace-verify"}, rederivable="true"))
++        def _onetrace_stage_retrieve(_onetrace_ctx, *_onetrace_args, **_onetrace_kwargs):
++            _onetrace_ctx.read(_onetrace_out["intake"])
++            _onetrace_ctx.read_external(_ONETRACE_ROOT / "data/corpus.json", "application/json",
++                                        name="data/corpus.json", trust_class="operator-authored")
++            _onetrace_value = retrieve(*_onetrace_args, **_onetrace_kwargs)
++            _onetrace_out["retrieve"] = _onetrace_write(_onetrace_ctx, "retrieve", _onetrace_value)
++            return _onetrace_value
++
++        @_onetrace_rec.stage("answer", _OnetraceInstrument(
++            "extractive", "python-package", _onetrace_metadata.version("onetrace"),
++            {"package": "onetrace"}, rederivable="false", rederivable_note="a stand-in for a hosted model"))
++        def _onetrace_stage_answer(_onetrace_ctx, *_onetrace_args, **_onetrace_kwargs):
++            _onetrace_ctx.read(_onetrace_out["retrieve"])
++            _onetrace_value = answer(*_onetrace_args, **_onetrace_kwargs)
++            _onetrace_out["answer"] = _onetrace_write(_onetrace_ctx, "answer", _onetrace_value)
++            return _onetrace_value
++
++        _onetrace_stage_intake()
++        passages = _onetrace_stage_retrieve(request)
++        return _onetrace_stage_answer(request, passages)
++    finally:
++        _onetrace_rec.close()
+diff --git a/.github/workflows/onetrace.yml b/.github/workflows/onetrace.yml
+new file mode 100644
+--- /dev/null
++++ b/.github/workflows/onetrace.yml
+@@ -0,0 +1,34 @@
++# Generated by `onetrace-ci instrument` from the plan. It runs the pipeline, then the
++# onetrace-ci gate against the committed baseline. The gate proves the run's records are
++# consistent and match the baseline; it does not prove the pipeline's output is correct.
++name: onetrace
++
++on:
++  push:
++  pull_request:
++
++permissions:
++  contents: read
++
++jobs:
++  onetrace:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
++      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
++        with:
++          python-version: "3.12"
++      - name: Install the pipeline
++        run: |
++          pip install --require-hashes -r requirements.lock
++      - name: Run the pipeline
++        env:
++          ONETRACE_RUN_ID: onetrace-ci-candidate
++        run: |
++          python -c "from pipeline.main import run; run('what does the warranty cover')"
++      - name: onetrace-ci gate
++        uses: shamiksaharcciit-oss/onetrace-ci@fe9a3109bb44db35f39f877a40d5c1b725705a78
++        with:
++          run: "runs/onetrace-ci-candidate"
++          baseline: "runs/baseline"
++          plan: "onetrace-plan.yaml"
