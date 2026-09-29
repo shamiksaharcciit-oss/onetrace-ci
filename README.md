@@ -463,6 +463,18 @@ started.
 - The observer never changes what your program does. It never reads a
   streamed response body, and if it can't record something, the program
   carries on and the report says it may be incomplete.
+- The observer never runs your program's code to name or fingerprint
+  something. It asks only a value's type, or what Python itself holds for
+  functions and classes, so no `__getattr__`, `__repr__` or `__iter__` of
+  yours runs, and no lazily imported module loads. What that leaves:
+  - On Python 3.10, which lacks the qualified names newer Pythons give code,
+    a function reachable only through an unusual C wrapper, or through a
+    `__wrapped__` set on a class, may go unnamed.
+  - A program run with an object of yours as its first argument (a path-like
+    object, say) is not named.
+  - Fingerprinting still calls an overridden `items()` on a dict subclass
+    (JSON's encoder does), and reads a pathlib path subclass's attributes, a
+    bytes subclass's buffer, and the fields of the frameworks' own objects.
 - A program that inspects its own builtins can tell it is being observed:
   under the observer, `inspect.isbuiltin(open)` is false.
 - A file written is recorded by its path's fingerprint, not its content.
