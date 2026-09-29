@@ -341,7 +341,9 @@ next onetrace release, `instrument` refuses a plan with a `corpus` (see
 above). The report lists what each other entry called, read and wrote.
 Discovery refuses if the command never called one of the entries. The first
 entry wins: if it calls another entry itself, that call is one of its stages,
-exactly as when only the first is named.
+exactly as when only the first is named. A run of another entry that the first
+starts in another thread or task is not inside it, and is reported as the
+other entry's.
 
 It runs the command you give it, unchanged, with an observer loaded for that
 command only. It sees what your fixtures do and nothing else: it never calls
@@ -372,8 +374,8 @@ a draft someone may have started answering.
   one discovery and never written down, so they join events within it but
   can't be looked up afterwards. An event from a run of an entry other than
   the first is marked with that entry's number (`"entry": 1`). A file read
-  or write also carries the time it happened, so a read can be ordered
-  against a write.
+  or write also carries when it happened, in nanoseconds from the start of
+  the discovery (never a date), so a read can be ordered against a write.
 
 **No name that could carry a value is written either.**
 

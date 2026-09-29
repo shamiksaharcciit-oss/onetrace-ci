@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -135,6 +136,7 @@ def observe(command: list[str], *, repo: Path, entry: str, events_path: Path,
         child[_PREFIX + "KEY"] = secrets.token_hex(32)      # this run's only; never written
         child[_PREFIX + "EVENTS"] = str(parts)
         child[_PREFIX + "ENTRIES"] = json.dumps(entries)
+        child[_PREFIX + "CLOCK"] = str(time.perf_counter_ns())   # the events' times count from here
         try:
             done = subprocess.run(command, cwd=repo, env=child, capture_output=True, text=True,
                                   timeout=timeout)

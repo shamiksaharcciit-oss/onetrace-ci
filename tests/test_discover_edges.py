@@ -1429,7 +1429,7 @@ def test_an_entry_run_inside_the_planned_entry_leaves_its_draft_as_it_would_be_a
         [None, "pipeline.ingest:run", "pipeline.retrieval:retrieve", "pipeline.llm:answer"]
     corpus = [line for line in both.splitlines() if line.startswith("corpus:")]
     assert [line for line in both.splitlines() if not line.startswith("corpus:")] == alone.splitlines()
-    assert "pipeline.ingest:run ran only inside runs of pipeline.main:run, where what it did is the query's own" \
+    assert "pipeline.ingest:run ran only inside runs of pipeline.main:run, where what it did is pipeline.main:run's own" \
         in corpus[0]
     assert ("- `pipeline.ingest:run` ran once, inside a run of `pipeline.main:run`, where what it did is recorded as "
             "that run's own.") in section(report, "Other entries")
@@ -1511,3 +1511,42 @@ def test_a_path_spelled_in_another_case_is_the_same_file(tmp_path, monkeypatch, 
     examined(1, "the corpus question")
     assert rc == 0, err
     assert "retrieve read 1 file that pipeline.ingest:run wrote" in read_document(draft, source="draft")["corpus"]
+
+
+INGEST_CALLING_QUERY = INGEST.replace("import json\n", "import json\n\nfrom pipeline.main import run as query\n", 1) + \
+    "    query(\"what does the warranty cover\")\n"
+
+
+def test_another_entry_s_call_to_the_planned_entry_is_listed_among_its_calls(tmp_path, monkeypatch, capsys, examined):
+    rc, draft, report, _, err = discover_in(
+        tmp_path, monkeypatch, capsys,
+        {"repo/pipeline/ingest.py": INGEST_CALLING_QUERY, "repo/pipeline/retrieval.py": QUERY_RETRIEVAL},
+        command=[sys.executable, "-c", "from pipeline.ingest import run; run()"], entries=BOTH)
+    examined(2, "the report's line for the ingest, and the corpus question")
+    assert rc == 0, err
+    assert "It called pipeline.ingest:chunk and pipeline.main:run." in section(report, "Other entries")
+    assert "retrieve read 1 file that pipeline.ingest:run wrote" in read_document(draft, source="draft")["corpus"]
+
+
+def test_a_read_in_another_process_after_the_write_is_joined(tmp_path, monkeypatch, capsys, examined):
+    """The ingest runs in the command's own process, the query in a process it starts: order
+    between processes comes from the observer's clock."""
+    child = f"from pipeline.main import run; run({REQUEST!r})"
+    ingest_then_child = [sys.executable, "-c", "import subprocess, sys; from pipeline.ingest import run; run(); "
+                         f"subprocess.run([sys.executable, '-c', {child!r}], check=True, timeout=300)"]
+    rc, draft, _, _, err = discover_in(
+        tmp_path, monkeypatch, capsys, {"repo/pipeline/ingest.py": INGEST, "repo/pipeline/retrieval.py": QUERY_RETRIEVAL},
+        command=ingest_then_child, entries=BOTH)
+    examined(1, "the corpus question")
+    assert rc == 0, err
+    assert "retrieve read 1 file that pipeline.ingest:run wrote" in read_document(draft, source="draft")["corpus"]
+
+
+def test_the_events_carry_times_from_the_discovery_s_start_not_the_date(tmp_path, monkeypatch, capsys, examined):
+    rc, _, _, events, err = discover_in(
+        tmp_path, monkeypatch, capsys, {"repo/pipeline/ingest.py": INGEST, "repo/pipeline/retrieval.py": QUERY_RETRIEVAL},
+        command=INGEST_THEN_QUERY, entries=BOTH)
+    times = [json.loads(line)["at"] for line in events.splitlines() if '"at":' in line]
+    examined(len(times), "times on file events")
+    assert rc == 0, err
+    assert times and all(0 <= t < 3600 * 10**9 for t in times), times[:3]

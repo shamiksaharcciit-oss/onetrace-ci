@@ -392,7 +392,7 @@ def _other_entries(entry: str, others: list[str], events: list[dict], stages: di
             line = (f"`{other}` ran {times}, inside a run of `{entry}`, where what it did is recorded as that "
                     f"run's own.")
             lines.append(line)
-            evidence.append(f"{other} ran only inside runs of {entry}, where what it did is the query's own")
+            evidence.append(f"{other} ran only inside runs of {entry}, where what it did is {entry}'s own")
             continue
         line = f"`{other}` ran {times}"
         line += (f", {nested} of them inside a run of `{entry}`, where what it did is recorded as that run's "

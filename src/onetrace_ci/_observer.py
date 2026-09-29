@@ -58,7 +58,8 @@ import time
 import types
 
 _STARTED = time.time_ns()
-_COUNTER = time.perf_counter_ns()
+#: Where this discovery's clock starts: `discover`'s own reading of the high-resolution counter.
+_CLOCK = int(os.environ.get("ONETRACE_CI_DISCOVER_CLOCK") or time.perf_counter_ns())
 _PREFIX = "ONETRACE_CI_DISCOVER_"
 _REPO = os.path.normcase(os.path.abspath(os.environ[_PREFIX + "REPO"]))
 _KEY = bytes.fromhex(os.environ[_PREFIX + "KEY"])
@@ -111,10 +112,11 @@ def _failed(where, exc):
 
 
 def _now():
-    """Nanoseconds since the epoch: the wall clock when this process started, carried on by the
-    high-resolution counter, so that two events in one process never share a time (the wall
-    clock alone ticks in steps of up to 16 ms on Windows)."""
-    return _STARTED + time.perf_counter_ns() - _COUNTER
+    """Nanoseconds since the discovery started, so that the events hold no date. It is read from
+    the high-resolution counter, which CPython takes from a clock the whole machine shares
+    (QueryPerformanceCounter, CLOCK_MONOTONIC, mach_absolute_time), so it orders events across
+    the command's processes too; the wall clock ticks in steps of up to 16 ms on Windows."""
+    return time.perf_counter_ns() - _CLOCK
 
 
 def _fp(data):
@@ -1089,9 +1091,10 @@ def _on_call(frame):
         return _local_trace
     caller = _caller(frame)
     by = _entry_of(caller) if caller is not None else None
-    if entry is not None and (entry == 0 or by != 0):
-        #: A run of an entry is not a call to a stage, unless the first entry calls another
-        #: directly: then it is one of the first's stages, as it would be were the other not named.
+    if entry is not None and (by is None or by == entry):
+        #: A run of an entry is a call only when another entry calls it directly: then it is one
+        #: of the caller's calls (for the first entry, one of its stages, as it would be were the
+        #: other not named).
         return _local_trace
     if _transparent(frame):
         if _named_function(frame) and by is not None:
