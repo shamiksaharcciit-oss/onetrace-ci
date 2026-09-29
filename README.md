@@ -21,6 +21,7 @@ and matches what you previously approved," never "the answer is correct."
 
 ## Install
 
+<!-- not executed -->
 ```
 pip install --require-hashes -r requirements.lock
 pip install --no-deps .
@@ -37,6 +38,7 @@ a plan file naming who approved that baseline. If you already have two
 approved_by: alice
 ```
 
+<!-- not executed -->
 ```
 onetrace-ci gate --run run/ --baseline baseline/ --plan onetrace-plan.yaml --out gate-out/
 ```
@@ -64,6 +66,7 @@ to.
 
 ## `onetrace-ci gate`
 
+<!-- not executed -->
 ```
 onetrace-ci gate --run R --baseline B --plan P [--runner J] --out D [--review-exit 0|2]
 ```
@@ -121,6 +124,7 @@ nothing.
 
 ## `onetrace-ci baseline propose`
 
+<!-- not executed -->
 ```
 onetrace-ci baseline propose --from R [--baseline B] --out B.new
 ```
@@ -141,6 +145,7 @@ need write permissions a fork PR does not have.
 
 ## Instrument from a plan
 
+<!-- run in a fixture repo -->
 ```
 onetrace-ci instrument --plan onetrace-plan.yaml --repo . --out instrument.patch
 ```
@@ -154,6 +159,7 @@ each stage can be re-derived, and which boundaries are approved. The command
 turns that plan into a **patch — never an edit in place** — and prints what
 the patch will change. Applying it is your step:
 
+<!-- run in a fixture repo -->
 ```
 git apply instrument.patch
 ```
@@ -175,14 +181,14 @@ stages:
     rederivable: "true"
   - name: retrieve
     function: pipeline.retrieval:retrieve
-    instrument: {name: bm25, package: rank_bm25}   # version read at run time
+    instrument: {name: bm25, package: rank_bm25, kind: retriever}   # version read at run time
     inputs: [intake]                # optional; the default is the previous stage
     files: [data/corpus.json]       # read with ctx.read_external
     trust: operator-authored
     rederivable: "true"
   - name: answer
     function: pipeline.llm:answer
-    instrument: {name: model-call, package: openai}
+    instrument: {name: model-call, package: openai, kind: model}
     rederivable: "false"
     rederivable_note: "hosted model; sampling not reproducible"
 approved_boundaries: []
@@ -197,8 +203,8 @@ their order, each trust class, whether each stage can be re-derived, the
 approved boundaries (even when there are none), and the files. If one is
 missing, the command refuses and names the field — all of them at once — and
 never fills one in by guessing. A `DECIDE:` question left in any field is
-refused the same way. `instrument` also takes an optional `kind`; without
-one, the kind is `python-package`, which says only how the version is found.
+refused the same way. Every `instrument` names its `kind` (retriever,
+chunker, model…), because the SDK's `Instrument` requires one.
 
 ### What the patch does
 

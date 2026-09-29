@@ -24,7 +24,7 @@ THE FORMAT
         rederivable: "true"               #   required on every stage
       - name: retrieve
         function: pipeline.retrieval:retrieve
-        instrument: {name: bm25, package: rank_bm25}   # version read at run time
+        instrument: {name: bm25, package: rank_bm25, kind: retriever}   # version read at run time
         inputs: [intake]                  # optional; the default is the previous stage
         files: [data/corpus.json]         # optional; read with ctx.read_external
         trust: operator-authored
@@ -35,8 +35,7 @@ THE FORMAT
       run: python -m pipeline.demo
       baseline: runs/baseline
 
-`instrument` also takes an optional `kind`; without one, the kind is `python-package`, which
-states only how the version is found. An intake stage (no `function`) may carry an
+`instrument` needs a `kind` (retriever, chunker, model...), because the SDK's Instrument does. An intake stage (no `function`) may carry an
 `instrument` too; without one, its instrument is the SDK call that records the inputs.
 """
 from __future__ import annotations
@@ -45,14 +44,14 @@ import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from onetrace_ci.plan import PlanError, names_nobody, read_document
+from onetrace_ci.plan import PlanError, find_open_questions, names_nobody, read_document
 
 TRUST_CLASSES = ("operator-authored", "model-generated", "externally-sourced")
-DEFAULT_INSTRUMENT_KIND = "python-package"
 _IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 _MODULE_RE = re.compile(rf"{_IDENT}(?:\.{_IDENT})*")
 _STAGE_KEYS = frozenset({"name", "function", "memory_inputs", "trust", "rederivable",
-                         "rederivable_note", "instrument", "inputs", "files"})
+                         "rederivable_note", "instrument", "inputs", "files", "config", "constants"})
+_DOTTED_RE = re.compile(rf"{_IDENT}(?:\.{_IDENT})*")
 _INSTRUMENT_KEYS = frozenset({"name", "package", "kind"})
 _CI_KEYS = frozenset({"install", "run", "baseline"})
 _GLOB_CHARS = set("*?[]")
@@ -94,6 +93,16 @@ class Stage:
     instrument: InstrumentSpec | None
     inputs: tuple[str, ...]
     files: tuple[str, ...]
+    #: Literal settings a person wrote, recorded as the instrument's configuration. None: none.
+    config: dict | None = None
+    #: Names of parameters (or dotted attributes of one) to record as constants at run time.
+    constants: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CorpusSpec:
+    source: str
+    stages: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +110,25 @@ class CiSpec:
     install: str
     run: str
     baseline: str
+
+
+@dataclass(frozen=True, slots=True)
+class SignSpec:
+    key_env: str
+    when_key_missing: str
+
+
+@dataclass(frozen=True, slots=True)
+class AnchorSpec:
+    source: str
+    config: str
+    when: str
+
+
+@dataclass(frozen=True, slots=True)
+class TrustSpec:
+    file: str
+    untrusted_signature: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +140,11 @@ class InstrumentPlan:
     stages: tuple[Stage, ...]
     approved_boundaries: tuple[str, ...]
     ci: CiSpec
+    #: None when the block is absent; "none" when a person chose none explicitly.
+    sign: SignSpec | str | None = None
+    anchor: AnchorSpec | str | None = None
+    trust: TrustSpec | None = None
+    corpus: CorpusSpec | None = None
 
 
 class _Problems:
@@ -123,15 +156,9 @@ class _Problems:
 
 
 def _find_decides(value, path: str, problems: _Problems):
-    if isinstance(value, str) and value.lstrip().startswith("DECIDE:"):
-        problems.add(path, f"still an open question ({value.strip()!r}); a person answers it "
-                           f"before anything is generated")
-    elif isinstance(value, dict):
-        for k, v in value.items():
-            _find_decides(v, f"{path}.{k}" if path else k, problems)
-    elif isinstance(value, list):
-        for i, v in enumerate(value):
-            _find_decides(v, f"{path}[{i}]", problems)
+    for where, question in find_open_questions(value, path):
+        problems.add(where, f"still an open question ({question!r}); a person answers it "
+                            f"before anything is generated")
 
 
 def _text(values: dict, key: str, path: str, problems: _Problems, *, required: bool) -> str | None:
@@ -256,8 +283,12 @@ def _stage(raw, i: int, names_so_far: list[str], problems: _Problems) -> Stage |
         iname = _text(ri, "name", f"{at}.instrument.name", problems, required=True)
         ipkg = _text(ri, "package", f"{at}.instrument.package", problems, required=True)
         ikind = _text(ri, "kind", f"{at}.instrument.kind", problems, required=False)
-        if iname and ipkg:
-            instrument = InstrumentSpec(iname, ipkg, ikind or DEFAULT_INSTRUMENT_KIND)
+        if ikind is None and "kind" not in ri:
+            problems.add(f"{at}.instrument.kind", f"missing for stage {name!r}; the SDK's Instrument "
+                                                  f"requires a kind (retriever, chunker, model...), so a "
+                                                  f"person names it")
+        if iname and ipkg and ikind:
+            instrument = InstrumentSpec(iname, ipkg, ikind)
 
     if "inputs" in raw:
         inputs = _names(raw, "inputs", f"{at}.inputs", problems)
@@ -267,10 +298,91 @@ def _stage(raw, i: int, names_so_far: list[str], problems: _Problems) -> Stage |
     else:
         inputs = (names_so_far[-1],) if names_so_far else ()
 
+    config = None
+    if "config" in raw:
+        rc = raw["config"]
+        if not isinstance(rc, dict):
+            problems.add(f"{at}.config", f"must be a mapping of literal settings, got {rc!r}")
+        else:
+            for key, value in rc.items():
+                if isinstance(value, bool):
+                    problems.add(f"{at}.config.{key}", f"{value!r} is a boolean, which the SDK does not "
+                                                       f"yet record as a setting; quote it (\"true\") to "
+                                                       f"record the text")
+                elif not isinstance(value, str):
+                    problems.add(f"{at}.config.{key}", f"must be a literal value, got {value!r}")
+            config = dict(rc)
+    constants = _names(raw, "constants", f"{at}.constants", problems)
+    for c in constants:
+        if not _DOTTED_RE.fullmatch(c):
+            problems.add(f"{at}.constants", f"{c!r} is not a parameter name or a dotted attribute of one")
+
     if name is None:
         return None
     return Stage(i, name, function, memory_inputs, trust, rederivable or "", note, instrument,
-                 inputs, files)
+                 inputs, files, config=config, constants=constants)
+
+
+_BLOCKS = {
+    "sign": {"key_env": None, "when_key_missing": ("unsigned", "refuse")},
+    "anchor": {"source": None, "config": None, "when": ("main", "every-run", "none")},
+    "trust": {"file": None, "untrusted_signature": ("review", "fail")},
+}
+_ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _looks_like_key_material(value: str) -> str | None:
+    """Why `value` looks like a key rather than the name of an environment variable, or None."""
+    if "BEGIN" in value and "-----" in value:
+        return "it holds a PEM header"
+    if not _ENV_NAME_RE.fullmatch(value):
+        if "/" in value or "\\" in value or value.endswith((".pem", ".key")):
+            return "it is a path"
+        return "it is not an environment variable name"
+    if len(value) >= 32 and "_" not in value and any(c.islower() for c in value)             and any(c.isupper() for c in value):
+        return "it has the length and alphabet of an encoded key"
+    return None
+
+
+def _block(values: dict, name: str, problems: _Problems):
+    """A `sign`, `anchor` or `trust` block: absent -> None; `none` -> "none"; else the fields,
+    every one of them required (each is either a person's decision or a name only they know)."""
+    raw = values.get(name)
+    if raw is None:
+        return None
+    if raw == "none" and name != "trust":
+        return "none"
+    if isinstance(raw, str) and raw.lstrip().startswith("DECIDE:"):
+        return None                          # already named as an open question
+    if not isinstance(raw, dict):
+        problems.add(name, f"must be a mapping of {sorted(_BLOCKS[name])}"
+                           + (" or `none`" if name != "trust" else "") + f", got {raw!r}")
+        return None
+    fields = _BLOCKS[name]
+    for key in sorted(set(raw) - set(fields)):
+        problems.add(f"{name}.{key}", f"not a {name} field (the fields are {sorted(fields)})")
+    got = {}
+    for key, allowed in fields.items():
+        value = _text(raw, key, f"{name}.{key}", problems, required=True)
+        if value is None:
+            continue
+        if allowed is not None and value not in allowed:
+            problems.add(f"{name}.{key}", f"{value!r} is not one of {list(allowed)}; a person decides")
+            continue
+        got[key] = value
+    if name == "sign" and "key_env" in got:
+        why = _looks_like_key_material(got["key_env"])
+        if why:
+            problems.add("sign.key_env", f"must name the environment variable that holds the key, "
+                                         f"never the key itself, and this value looks like key "
+                                         f"material ({why}); the plan must never carry a key")
+            got.pop("key_env")
+    for key in ("config", "file"):
+        if key in got:
+            _relative_path(got[key], f"{name}.{key}", problems)
+    if len(got) != len(fields):
+        return None
+    return {"sign": SignSpec, "anchor": AnchorSpec, "trust": TrustSpec}[name](**got)
 
 
 def parse_instrument_plan(text: str, *, source: str) -> InstrumentPlan:
@@ -335,9 +447,40 @@ def parse_instrument_plan(text: str, *, source: str) -> InstrumentPlan:
         if install and run and baseline:
             ci = CiSpec(install, run, baseline)
 
+    corpus = None
+    raw_corpus = values.get("corpus")
+    if raw_corpus is not None and not (isinstance(raw_corpus, str) and raw_corpus.lstrip().startswith("DECIDE:")):
+        if not isinstance(raw_corpus, dict):
+            problems.add("corpus", f"must be a mapping {{from, stages}}, got {raw_corpus!r}")
+        else:
+            for key in sorted(set(raw_corpus) - {"from", "stages"}):
+                problems.add(f"corpus.{key}", "not a corpus field (the fields are from and stages)")
+            source_ = _text(raw_corpus, "from", "corpus.from", problems, required=True)
+            linked = _names(raw_corpus, "stages", "corpus.stages", problems)
+            if not linked:
+                problems.add("corpus.stages", "missing; a person names the stages the link is recorded on")
+            planned = {s.name for s in stages}
+            for s in linked:
+                if s not in planned:
+                    problems.add("corpus.stages", f"{s!r} is not a planned stage")
+            if source_ and linked:
+                corpus = CorpusSpec(source_, linked)
+    if "entries" in values:
+        problems.add("entries", "several entries (one run type each) are generated as decorators, "
+                                "which this build has not yet been checked against (onetrace 0.2.0); "
+                                "plan one entry for now")
+
+    sign = _block(values, "sign", problems)
+    anchor = _block(values, "anchor", problems)
+    trust = _block(values, "trust", problems)
+    if sign is not None and sign != "none" and "trust" not in values:
+        problems.add("trust", "missing; a plan that signs runs names the trust file of recorder "
+                              "keys, and whether an untrusted signature is review or fail")
+
     if problems.items:
         raise PlanRefused(source, problems.items)
-    return InstrumentPlan(source, approved_by, entry, run_dir, tuple(stages), boundaries, ci)
+    return InstrumentPlan(source, approved_by, entry, run_dir, tuple(stages), boundaries, ci,
+                          sign, anchor, trust, corpus)
 
 
 def load_instrument_plan(path: Path) -> InstrumentPlan:

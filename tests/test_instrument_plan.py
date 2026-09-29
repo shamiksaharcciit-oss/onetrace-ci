@@ -17,14 +17,14 @@ stages:
     rederivable: "true"
   - name: retrieve
     function: pipeline.retrieval:retrieve
-    instrument: {name: bm25, package: rank_bm25}
+    instrument: {name: bm25, package: rank_bm25, kind: retriever}
     inputs: [intake]
     files: [data/corpus.json]
     trust: operator-authored
     rederivable: "true"
   - name: answer
     function: pipeline.llm:answer
-    instrument: {name: model-call, package: openai}
+    instrument: {name: model-call, package: openai, kind: model}
     rederivable: "false"
     rederivable_note: "hosted model; sampling not reproducible"
 approved_boundaries: []
@@ -105,10 +105,10 @@ REFUSALS = {
     "trust missing, memory inputs named": (_without(COMPLETE, "    trust: externally-sourced\n"), "stages[0].trust"),
     "trust not a trust class": (_swap(COMPLETE, "trust: operator-authored", "trust: trusted"), "stages[1].trust"),
     "trust secret": (_swap(COMPLETE, "trust: operator-authored", "trust: secret"), "stages[1].trust"),
-    "a function stage with no instrument": (_without(COMPLETE, "    instrument: {name: model-call, package: openai}\n"), "stages[2].instrument"),
-    "an instrument with no package": (_swap(COMPLETE, "{name: bm25, package: rank_bm25}", "{name: bm25}"), "stages[1].instrument.package"),
-    "an instrument with no name": (_swap(COMPLETE, "{name: bm25, package: rank_bm25}", "{package: rank_bm25}"), "stages[1].instrument.name"),
-    "an instrument with an unknown key": (_swap(COMPLETE, "{name: bm25, package: rank_bm25}", "{name: bm25, package: rank_bm25, version: x}"), "stages[1].instrument.version"),
+    "a function stage with no instrument": (_without(COMPLETE, "    instrument: {name: model-call, package: openai, kind: model}\n"), "stages[2].instrument"),
+    "an instrument with no package": (_swap(COMPLETE, "{name: bm25, package: rank_bm25, kind: retriever}", "{name: bm25}"), "stages[1].instrument.package"),
+    "an instrument with no name": (_swap(COMPLETE, "{name: bm25, package: rank_bm25, kind: retriever}", "{package: rank_bm25}"), "stages[1].instrument.name"),
+    "an instrument with an unknown key": (_swap(COMPLETE, "{name: bm25, package: rank_bm25, kind: retriever}", "{name: bm25, package: rank_bm25, version: x}"), "stages[1].instrument.version"),
     "a stage with neither a function nor memory inputs": (_without(COMPLETE, "    memory_inputs: [request]\n"), "stages[0].function"),
     "memory inputs on a function stage": (_swap(COMPLETE, "    inputs: [intake]\n", "    inputs: [intake]\n    memory_inputs: [q]\n"), "stages[1].memory_inputs"),
     "a class method": (_swap(COMPLETE, "pipeline.llm:answer", "pipeline.llm:Model.answer"), "stages[2].function"),
@@ -161,12 +161,12 @@ stages:
     trust: externally-sourced
   - name: retrieve
     function: pipeline.retrieval:retrieve
-    instrument: {name: bm25, package: rank_bm25}   # version read at run time
+    instrument: {name: bm25, package: rank_bm25, kind: retriever}   # version read at run time
     inputs: [intake]
     files: [data/corpus.json]       # -> ctx.read_external
   - name: answer
     function: pipeline.llm:answer
-    instrument: {name: model-call, package: openai}
+    instrument: {name: model-call, package: openai, kind: model}
     rederivable: "false"
     rederivable_note: "hosted model; sampling not reproducible"
 approved_boundaries: []

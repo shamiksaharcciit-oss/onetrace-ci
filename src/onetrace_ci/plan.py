@@ -28,8 +28,8 @@ from onetrace_ci.yamlsubset import SubsetError, parse
 _GATE_KEYS = frozenset({"format", "approved_boundaries", "known_limits",
                         "reproduce", "approved_by"})
 #: Read by `onetrace-ci instrument` (see `instrument_plan.py`), not by the gate.
-INSTRUMENT_KEYS = frozenset({"entry", "run_dir", "stages", "ci"})
-_KNOWN_KEYS = _GATE_KEYS | INSTRUMENT_KEYS
+INSTRUMENT_KEYS = frozenset({"entry", "run_dir", "stages", "ci", "sign", "anchor", "trust"})
+_KNOWN_KEYS = _GATE_KEYS | INSTRUMENT_KEYS | {"require_declared"}
 
 
 class PlanError(RuntimeError):
@@ -46,6 +46,22 @@ class Plan:
     reproduce: bool
     approved_by: str
     ignored_keys: tuple[str, ...] = field(default_factory=tuple)
+    #: When true, the gate fails a run that records any field as `undeclared` (nobody stated it).
+    require_declared: bool = False
+    #: Every field still holding a `DECIDE:` question, as (field path, question).
+    open_questions: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+
+
+def find_open_questions(value, path: str = "") -> list[tuple[str, str]]:
+    """Every `DECIDE:` question left in a plan document, as (field path, question). A plan
+    with one is not yet decided: `instrument` refuses it and the gate fails it."""
+    if isinstance(value, str) and value.lstrip().startswith("DECIDE:"):
+        return [(path, value.strip())]
+    if isinstance(value, dict):
+        return [q for k, v in value.items() for q in find_open_questions(v, f"{path}.{k}" if path else k)]
+    if isinstance(value, list):
+        return [q for i, v in enumerate(value) for q in find_open_questions(v, f"{path}[{i}]")]
+    return []
 
 
 def names_nobody(value) -> bool:
@@ -89,6 +105,13 @@ def parse_plan_text(text: str, *, source: str) -> Plan:
     if format_val is not None and not isinstance(format_val, str):
         raise PlanError(f"{source}: 'format' must be a string, got {format_val!r}")
 
+    require_declared = values.get("require_declared")
+    if require_declared is None:
+        require_declared = False
+    if not isinstance(require_declared, bool) and not (
+            isinstance(require_declared, str) and require_declared.lstrip().startswith("DECIDE:")):
+        raise PlanError(f"{source}: 'require_declared' must be true or false, got {require_declared!r}")
+
     return Plan(
         format=format_val,
         approved_boundaries=_name_list(values, "approved_boundaries", source),
@@ -96,6 +119,8 @@ def parse_plan_text(text: str, *, source: str) -> Plan:
         reproduce=reproduce_val,
         approved_by=approved_by,
         ignored_keys=tuple(sorted(k for k in values if k not in _KNOWN_KEYS)),
+        require_declared=require_declared is True,
+        open_questions=tuple(find_open_questions(values)),
     )
 
 

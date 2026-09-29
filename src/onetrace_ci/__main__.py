@@ -1,4 +1,4 @@
-"""`onetrace-ci`: `gate`, `baseline propose` and `instrument`."""
+"""`onetrace-ci`: `gate`, `baseline propose`, `instrument` and `init-ci`."""
 from __future__ import annotations
 
 import sys
@@ -24,6 +24,11 @@ onetrace-ci {version}
                     the pipeline the reviewed plan P describes, and print
                     what it will change. Exit 0 with the patch written
                     (empty when already instrumented from P), 1 refused.
+  onetrace-ci init-ci --install CMD --run CMD --run-dir D --baseline B
+                    [--plan P] [--repo R]
+                    for code instrumented by hand: write the workflow and a
+                    minimal plan whose approved_by is a DECIDE: question the
+                    gate fails until a person answers it. Never overwrites.
 """
 
 
@@ -41,6 +46,9 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[:1] == ["instrument"]:
         from onetrace_ci.instrument import main as instrument_main
         return instrument_main(argv[1:])
+    if argv and argv[:1] == ["init-ci"]:
+        from onetrace_ci.init_ci import main as init_ci_main
+        return init_ci_main(argv[1:])
     print(USAGE.format(version=__version__), file=sys.stderr)
     return 2
 

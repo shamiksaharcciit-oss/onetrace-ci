@@ -11,7 +11,7 @@ import pytest
 
 def _write_run(out_dir: Path, run_id: str, *, retrieve_version="1.0.0",
                retrieve_text="same text", answer_ok=True,
-               boundary: str | None = None) -> None:
+               boundary: str | None = None, top_k: str = "1") -> None:
     from onetrace.emit import Instrument, Recorder, Refusal
 
     rec = Recorder(str(out_dir), run_id=run_id, declared_stages=["retrieve", "answer"],
@@ -20,9 +20,9 @@ def _write_run(out_dir: Path, run_id: str, *, retrieve_version="1.0.0",
                                 "note": "test fixture boundary"}] if boundary else None))
 
     @rec.stage("retrieve", Instrument("word-overlap", "retriever", retrieve_version,
-                                      {"top_k": "1"}))
+                                      {"top_k": top_k}))
     def retrieve(ctx):
-        ctx.constant("top_k", "1")
+        ctx.constant("top_k", top_k)
         return ctx.write_json("retrieved.json", {"id": "p1", "text": retrieve_text})
 
     @rec.stage("answer", Instrument("extractive", "answerer", "1.0.0",

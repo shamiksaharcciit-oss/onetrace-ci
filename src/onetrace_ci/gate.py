@@ -15,7 +15,8 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from onetrace_ci.plan import Plan, load_plan
+from onetrace_ci.errors import format_refusal
+from onetrace_ci.plan import Plan, PlanError, load_plan
 
 PASS, FAIL, REVIEW, WARN = "pass", "fail", "review", "warn"
 _RANK = {PASS: 0, WARN: 1, REVIEW: 2, FAIL: 3}
@@ -95,6 +96,38 @@ def _coverage_finding(run: Path, plan: Plan) -> Finding:
     return Finding(check="coverage", command=f"read {manifest_path}", exit_code=None,
                   report_path=str(manifest_path), verdict=PASS,
                   detail="every boundary/gap (if any) is in approved_boundaries")
+
+
+def _undeclared_fields(run: Path) -> tuple[int, list[str]]:
+    """(receipts read, fields recorded as `undeclared`): a trust class or re-derivability
+    nobody stated. Decorated code records an omitted one as the explicit value `undeclared`."""
+    fields, count = [], 0
+    for p in sorted((run / "receipts").glob("*.json")):
+        receipt = _read_json(p)
+        count += 1
+        stage = (receipt.get("stage") or {}).get("name")
+        for i in receipt.get("inputs") or []:
+            if i.get("trust_class") == "undeclared":
+                fields.append(f"stage {stage!r}: the trust class of input {i.get('name')!r}")
+        if (receipt.get("instrument") or {}).get("rederivable") == "undeclared":
+            fields.append(f"stage {stage!r}: rederivable")
+    return count, fields
+
+
+def _declared_finding(run: Path, plan: Plan) -> Finding:
+    count, fields = _undeclared_fields(run)
+    command = f"read {run / 'receipts'}"
+    if plan.require_declared and fields:
+        return Finding(check="declared", command=command, exit_code=None, report_path=None,
+                       verdict=FAIL, detail="undeclared, and the plan requires every field declared "
+                                            "(require_declared: true): " + "; ".join(fields))
+    if plan.require_declared:
+        return Finding(check="declared", command=command, exit_code=None, report_path=None,
+                       verdict=PASS, detail=f"every trust class and re-derivability is declared "
+                                            f"({count} receipts read)")
+    listed = (": " + "; ".join(fields)) if fields else ""
+    return Finding(check="declared", command=command, exit_code=None, report_path=None, verdict=PASS,
+                   detail=f"{len(fields)} undeclared field(s){listed} (require_declared: false)")
 
 
 def _verify_finding(run: Path) -> Finding:
@@ -230,8 +263,15 @@ def run_gate(*, run: Path, baseline: Path, plan_path: Path, runner: Path | None,
                                 detail="missing or empty -- a gate against an unapproved "
                                       "plan proves nothing"))
 
+    for field, question in plan.open_questions:
+        findings.append(Finding(check=f"plan.{field}", command=f"read {plan_path}", exit_code=None,
+                                report_path=str(plan_path), verdict=FAIL,
+                                detail=f"still an open DECIDE: question ({question!r}); a person "
+                                       f"answers it before a gate against this plan can pass"))
+
     findings.append(_verify_finding(run))
     findings.append(_coverage_finding(run, plan))
+    findings.append(_declared_finding(run, plan))
     findings.extend(_diff_findings(baseline, run, out, plan))
     if plan.reproduce:
         findings.append(_reproduce_finding(run, runner, out))
@@ -267,6 +307,51 @@ def run_gate(*, run: Path, baseline: Path, plan_path: Path, runner: Path | None,
     return exit_code, findings
 
 
+def _setting_changes(differs: dict) -> str:
+    """The settings a diff annotation says changed, as `name old -> new`; digests left out."""
+    parts = []
+    for field_name in sorted(differs):
+        if field_name.endswith("_digest"):
+            continue
+        value = differs[field_name]
+        name = field_name.removeprefix("assertions.constants.")
+        if isinstance(value, (list, tuple)) and len(value) == 2:
+            parts.append(f"{name} {value[0]} -> {value[1]}")
+        else:
+            parts.append(f"{name} {value}")
+    return "; ".join(parts)
+
+
+def summary_line(findings: list[Finding], out: Path) -> str:
+    """What happened, in one line, for a person reading the log: printed first, in human mode
+    only. The first failing check; else the first difference and the setting that changed; else
+    how many stages are the same as the baseline."""
+    fails = [f for f in findings if f.verdict == FAIL]
+    if fails:
+        return f"fail: {fails[0].check}: {fails[0].detail}"
+    report = out / "diff" / "diff.json"
+    data = _read_json(report) if report.is_file() else {}
+    changes = {a.get("stage"): _setting_changes(a.get("differs") or {})
+               for a in data.get("annotations") or []}
+    diff = next((f for f in findings if f.check == "diff"), None)
+    if diff is not None and diff.verdict == REVIEW:
+        first = data.get("first_difference") or {}
+        stage = first.get("stage") if isinstance(first, dict) else first
+        what = changes.get(stage)
+        return f'review: first difference at stage "{stage}"' + (f" ({what})" if what else "")
+    reviews = [f for f in findings if f.verdict == REVIEW]
+    if reviews:
+        same = [s["stage"] for s in data.get("ladder") or [] if s.get("verdict") == "same"
+                and changes.get(s["stage"])]
+        if same:
+            return f'review: instrument or config changed at stage "{same[0]}" ({changes[same[0]]})'
+        return f"review: {reviews[0].check}: {reviews[0].detail}"
+    count = sum(1 for s in data.get("ladder") or [] if s.get("verdict") == "same")
+    line = f"pass: {count} stages same as baseline"
+    warns = [f for f in findings if f.verdict == WARN]
+    return line + (f" (warn: {warns[0].check}: {warns[0].detail})" if warns else "")
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -283,9 +368,10 @@ def main(argv: list[str] | None = None) -> int:
         exit_code, findings = run_gate(
             run=args.run, baseline=args.baseline, plan_path=args.plan,
             runner=args.runner, out=args.out, review_exit_zero=(args.review_exit == 0))
-    except GateError as e:
-        print(f"onetrace-ci gate: refused: {e}", file=sys.stderr)
+    except (GateError, PlanError) as e:
+        print(format_refusal("gate", [str(e)]), file=sys.stderr)
         return 1
+    print(summary_line(findings, args.out))
     for f in findings:
         print(f"[{f.verdict.upper():6}] {f.check}: {f.detail}")
     return exit_code

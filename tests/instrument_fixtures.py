@@ -57,14 +57,14 @@ stages:
     rederivable: "true"
   - name: retrieve
     function: pipeline.retrieval:retrieve
-    instrument: {name: word-overlap, package: onetrace-verify}
+    instrument: {name: word-overlap, package: onetrace-verify, kind: python-package}
     inputs: [intake]
     files: [data/corpus.json]
     trust: operator-authored
     rederivable: "true"
   - name: answer
     function: pipeline.llm:answer
-    instrument: {name: extractive, package: onetrace}
+    instrument: {name: extractive, package: onetrace, kind: python-package}
     rederivable: "false"
     rederivable_note: "a stand-in for a hosted model"
 approved_boundaries: []

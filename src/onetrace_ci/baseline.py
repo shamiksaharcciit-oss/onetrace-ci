@@ -20,6 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from onetrace_ci.errors import format_refusal
 from onetrace_ci.gate import _SUBPROCESS_TIMEOUT_SECONDS, _console_script
 
 
@@ -68,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         diff_out = propose(from_run=args.from_run, baseline=args.baseline, out=args.out)
     except BaselineError as e:
-        print(f"onetrace-ci baseline propose: refused: {e}", file=sys.stderr)
+        print(format_refusal("baseline propose", [str(e)]), file=sys.stderr)
         return 1
     print(f"candidate baseline written to {args.out}")
     if diff_out is None:
@@ -76,4 +77,5 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"diff against the current baseline written to {diff_out}")
     print("nothing has been committed -- review, then commit the new baseline by hand")
+    print(f"next: git add {args.out} && git commit")
     return 0
