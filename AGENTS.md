@@ -46,4 +46,6 @@ wrong, however convenient.
 - `src/onetrace_ci/yamlsubset.py`, `plan.py`, `instrument_plan.py`: the plan file.
 - `src/onetrace_ci/instrument.py`: `onetrace-ci instrument`, a plan into a patch.
 - `src/onetrace_ci/init_ci.py`: `onetrace-ci init-ci`, the workflow for code instrumented by hand.
+- `src/onetrace_ci/discover.py`, `discover_infer.py`, `_observer.py`: `onetrace-ci discover`. The
+  observer is copied into the observed command's interpreter as a file; never import it.
 - `src/onetrace_ci/errors.py` and `docs/errors.md`: every refusal's fix.

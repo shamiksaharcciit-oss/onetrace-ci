@@ -275,11 +275,101 @@ field), and no patch is written:
 - a name the generated code reserves (`_onetrace_…`);
 - an entry module that is not UTF-8, and plan paths with backslashes.
 
+## Discover the stages first
+
+When you don't know a pipeline's stages yet, let your own tests show them:
+
+<!-- not executed -->
+```sh
+onetrace-ci discover --entry pipeline.main:run -- pytest tests/test_pipeline.py
+```
+
+It runs the command you give it, unchanged, with an observer loaded for that
+command only. It sees what your fixtures do and nothing else: it never calls
+production, and never runs the pipeline on inputs of its own. It writes three
+files, and refuses to run if any of them already exists: it never overwrites
+a draft someone may have started answering.
+
+- **`onetrace-plan.draft.yaml`**, a plan in the format `instrument` reads: the
+  functions your entry function called, in the order it called them, each
+  stage's inputs from the data that flowed between them, and the files each
+  one read. **Every field that carries meaning is a `DECIDE:` question** —
+  who approves, trust, whether a stage can be re-derived and the note that
+  goes with it, the boundaries, the instrument's kind — and `instrument`
+  refuses the plan until a person has answered every one. Answer them in a
+  copy named `onetrace-plan.yaml`.
+- **`discovery-report.md`**, which opens with the number of questions still
+  open, then lists first the reads no stage explains (a file, an HTTP call or
+  an environment variable read outside every stage), then each stage with the
+  reasons behind it — never a score — the proposed boundaries, the
+  branches your fixtures never took, and the settings seen in the code: a
+  short literal keyword argument with its value, and one read from the
+  environment by the variable's name only, never its value. A literal that
+  may be a credential, spans lines or is long is named without its value.
+  Each stage's settings are drafted as a question, not recorded.
+- **`discovery-events.jsonl`**, what the observer saw. It holds
+  **fingerprints only**: no data value, no environment value, no exception
+  message (types only). Fingerprints are keyed by a random key made for that
+  one discovery and never written down, so they join events within it but
+  can't be looked up afterwards.
+
+**No name that could carry a value is written either.**
+
+- A file is named only if git tracks it. Outside a git work tree, it is
+  named if it existed before the run. Inside one where git can't list its
+  files, discovery refuses rather than guess.
+- A code file is also named if it existed before the run, so code you are
+  still writing keeps its name. A code file made during the run is not, and
+  a stage in one is proposed as "unnamed stage", with its `function` a
+  question.
+- A file outside the repository is named only by the installed package it
+  belongs to.
+- An environment variable, a host or a program is named only if the code
+  that used it writes the name: your repository's code on the stack (not
+  your tests, not the test runner), or the library code it called to do so.
+- Anything else is described by what it is ("a file not tracked by git").
+  A stage that reads such a file has its `files` drafted as a question.
+
+**What discovery does not claim:**
+
+- **Discovery is not evidence.** Observation is data about the fixtures that
+  ran. It never makes anything pass.
+- **It sees only the code paths the fixtures exercised.** The branches that
+  weren't run are listed, and coverage stays incomplete until a person
+  approves the boundaries.
+- **Nothing it drafts is a decision.** The report opens with the number of
+  `DECIDE:` questions still open.
+
+It observes file reads and writes, environment reads, `subprocess.run`, HTTP
+calls through `requests` or `httpx` (naming `openai` or `anthropic` when
+their code made the call), exceptions, and the calls your entry function
+makes, directly or through a lambda, a comprehension or a decorator. It does
+not yet take in LangChain or LlamaIndex callbacks or OpenTelemetry spans.
+
+- A function run in another thread or task while the entry runs is listed
+  among the reads no stage explains, with what it read, but not proposed as
+  a stage: the entry doesn't call it directly.
+- A nested function or a callable object the entry calls (a factory's
+  closure, a decorator's wrapper) is passed through: calls it makes count as
+  the entry's. The report lists it under "Called by the entry, but not
+  proposed".
+- A method, an async function or a generator is proposed with that fact as
+  a reason: `instrument` wraps only plain module-level functions. What a
+  generator yields is never fingerprinted.
+- If the entry calls no module-level function of the repository directly,
+  the report says so first: no stage was proposed.
+- The observer loads in the command's interpreter and in every Python
+  process it starts, and each keeps its own events.
+- The observer never changes what your program does. It never reads a
+  streamed response body, and if it can't record something, the program
+  carries on and the report says it may be incomplete.
+- A program that inspects its own builtins can tell it is being observed:
+  under the observer, `inspect.isbuiltin(open)` is false.
+
 ## What this is not
 
-No observer (nothing watches your pipeline or infers its stages for you —
-with `instrument`, a person still writes the plan). No PR comment, no SARIF
-annotation, no PyPI or Marketplace publication.
+No PR comment, no SARIF annotation, no PyPI or Marketplace publication.
+Neither `discover` nor `instrument` decides meaning: a person writes it.
 
 ## License
 

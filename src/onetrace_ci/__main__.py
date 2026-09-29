@@ -29,6 +29,12 @@ onetrace-ci {version}
                     for code instrumented by hand: write the workflow and a
                     minimal plan whose approved_by is a DECIDE: question the
                     gate fails until a person answers it. Never overwrites.
+  onetrace-ci discover --entry module:function [--repo R] [--out-dir D] -- CMD...
+                    run CMD (your own tests or fixtures) unchanged, watch
+                    what the pipeline does, read its code, and draft the
+                    plan with every meaning field a DECIDE: question.
+                    Writes onetrace-plan.draft.yaml, discovery-report.md and
+                    discovery-events.jsonl (fingerprints only).
 """
 
 
@@ -49,6 +55,9 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[:1] == ["init-ci"]:
         from onetrace_ci.init_ci import main as init_ci_main
         return init_ci_main(argv[1:])
+    if argv and argv[:1] == ["discover"]:
+        from onetrace_ci.discover import main as discover_main
+        return discover_main(argv[1:])
     print(USAGE.format(version=__version__), file=sys.stderr)
     return 2
 

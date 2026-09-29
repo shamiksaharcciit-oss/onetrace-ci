@@ -83,6 +83,15 @@ CODES: list[tuple[str, str, str]] = [
      "Move the existing file aside (or choose another path), then run the command again."),
     ("not-a-directory", r"not a directory",
      "Point the option at an existing run folder (one with a MANIFEST.json)."),
+    ("discover-command", r"the command exited \d+|the command .* was not found|the command to observe is missing",
+     "Give discover, after `--`, a command that runs your fixtures and passes on its own "
+     "(for example `-- pytest tests/test_pipeline.py`)."),
+    ("discover-entry-unseen", r"the observer never loaded|the command never called",
+     "Name in --entry the function your fixtures call (`module.path:function`), and run a Python "
+     "command that honours PYTHONPATH (without -E or -I) and exits normally."),
+    ("discover-git", r"git could not list the files it tracks",
+     "Make `git ls-files` work in the repository (install git, or allow the folder with "
+     "`git config --global --add safe.directory <path>`), then run discover again."),
 ]
 _COMPILED = [(code, re.compile(pattern), fix) for code, pattern, fix in CODES]
 

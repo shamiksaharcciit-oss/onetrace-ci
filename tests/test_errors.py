@@ -35,6 +35,16 @@ def _refusal_messages(tmp_path_factory) -> list[str]:
             with pytest.raises(PlanRefused) as caught:
                 parse_instrument_plan(text, source="<t>")
             messages.extend(caught.value.problems)
+    from onetrace_ci.discover import DiscoverRefused, discover, entry_file
+    for bad in ("pipeline.main", "pipeline.nowhere:run"):
+        with pytest.raises(DiscoverRefused) as caught:
+            entry_file(make_repo(tmp_path_factory.mktemp("d")), bad)
+        messages.append(str(caught.value))
+    import sys as _sys
+    with pytest.raises(DiscoverRefused) as caught:
+        discover(entry="pipeline.main:run", command=[_sys.executable, "-c", "raise SystemExit(3)"],
+                 repo=make_repo(tmp_path_factory.mktemp("d")), out_dir=tmp_path_factory.mktemp("o"))
+    messages.append(str(caught.value))
     for text, _ in test_yamlsubset.REFUSED.values():
         with pytest.raises(SubsetError) as caught:
             parse(text, source="<t>")

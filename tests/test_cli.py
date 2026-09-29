@@ -14,7 +14,7 @@ def _cli(*args, cwd=None):
 
 def test_usage_names_every_command(examined):
     result = _cli()
-    commands = ["gate", "baseline propose", "instrument", "init-ci"]
+    commands = ["gate", "baseline propose", "instrument", "init-ci", "discover"]
     examined(len(commands), "commands the usage text must name")
     assert result.returncode == 2
     for c in commands:

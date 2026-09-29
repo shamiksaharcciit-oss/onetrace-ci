@@ -53,6 +53,7 @@ ACCEPTED = {
     "no trailing newline": "approved_by: alice",
     "crlf line endings": "approved_by: alice\r\nknown_limits:\r\n  - embed\r\n",
     "a UTF-8 byte order mark": "﻿approved_by: alice\n",
+    "a quoted value holding a comma in a flow mapping": "i: {k: \"x, y\", m: z, n: 'p, q'}\n",
     "a key with a space": "reviewed on: monday\n",
 }
 

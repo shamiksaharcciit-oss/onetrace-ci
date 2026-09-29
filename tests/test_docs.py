@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DOCS = ["README.md", "AGENTS.md", "docs/agents/ci.md", "docs/errors.md"]
 BLOCK_RE = re.compile(r"(?:^(<!-- [^>]+ -->)\n)?^```(\w*)\n(.*?)^```", re.M | re.S)
 SUBCOMMANDS = {"gate": ["gate"], "baseline": ["baseline", "propose"], "instrument": ["instrument"],
-               "init-ci": ["init-ci"]}
+               "init-ci": ["init-ci"], "discover": ["discover"]}
 
 
 def _blocks():

@@ -241,7 +241,10 @@ def _split_flow(inner: str, source: str, no: int) -> list[str]:
     parts, cur, i = [], [], 0
     while i < len(inner):
         c = inner[i]
-        if c in ("'", '"') and not "".join(cur).strip():
+        so_far = "".join(cur)
+        #: A quote opens a quoted scalar where a value starts: at the start of an entry, or after
+        #: the `key: ` of a flow mapping's entry.
+        if c in ("'", '"') and (not so_far.strip() or (so_far.rstrip().endswith(":") and so_far[-1:] == " ")):
             j = i + 1
             while j < len(inner):
                 if c == '"' and inner[j] == "\\":

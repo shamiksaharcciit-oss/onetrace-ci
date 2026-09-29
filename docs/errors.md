@@ -152,3 +152,21 @@ A file the command would write already exists. onetrace-ci never overwrites a fi
 A run or baseline path is not a folder.
 
 **Fix:** Point the option at an existing run folder (one with a MANIFEST.json).
+
+## discover-command
+
+The command discover observes failed, was not found, or was not given. Discovery drafts only from fixtures that pass: a failing run shows what went wrong, not what the pipeline does.
+
+**Fix:** Give discover, after `--`, a command that runs your fixtures and passes on its own (for example `-- pytest tests/test_pipeline.py`).
+
+## discover-entry-unseen
+
+The command passed, but discovery saw nothing to draft from: the observer never loaded in its interpreter, or the command never called the function `--entry` names. A draft from a run discovery never saw would look like an answer, so it refuses instead.
+
+**Fix:** Name in --entry the function your fixtures call (`module.path:function`), and run a Python command that honours PYTHONPATH (without -E or -I) and exits normally.
+
+## discover-git
+
+The repository is inside a git work tree, but git could not list the files it tracks (git is not installed, or it refuses the folder). Discovery writes a file's name only if git tracks it, and it doesn't guess from what happens to exist, so it refuses.
+
+**Fix:** Make `git ls-files` work in the repository (install git, or allow the folder with `git config --global --add safe.directory <path>`), then run discover again.

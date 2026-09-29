@@ -10,6 +10,9 @@ baseline; it does not prove the output is correct.
   `onetrace-ci init-ci`. It writes the workflow and a minimal plan, and nothing else.
 - **The code is not instrumented yet, and a person has written a plan** naming the stages:
   run `onetrace-ci instrument`. It writes a patch for review, never an edit in place.
+- **Nobody knows the stages yet**: run `onetrace-ci discover` with the project's own tests. It
+  drafts the plan, with every meaning field a `DECIDE:` question. Show the person the report
+  and the questions; never answer them yourself.
 
 Never write a plan's meaning fields yourself. Who approves the baseline, trust classes and
 re-derivability are a person's answers. Leave a `DECIDE:` question for them, and say so.
