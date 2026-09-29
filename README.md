@@ -321,6 +321,25 @@ When you don't know a pipeline's stages yet, let your own tests show them:
 onetrace-ci discover --entry pipeline.main:run -- pytest tests/test_pipeline.py
 ```
 
+If your fixtures also run a separate ingest, name both entries, the query
+first:
+
+<!-- not executed -->
+```sh
+onetrace-ci discover --entry pipeline.main:run --entry pipeline.ingest:run -- pytest tests/
+```
+
+The plan is drafted for the first entry. The others are observed in the same
+command, and the draft gains a `corpus` question: which ingest run does the
+query read? The question carries what the fixtures showed. It says which of
+the first entry's stages read a file that another entry wrote, matched by the
+file's path. For a file git doesn't track, it names the nearest directory
+that holds a file git does track. Discovery never chooses the ingest run: a
+person answers with `from:` and `stages:`, or deletes the line. Until the
+next onetrace release, `instrument` refuses a plan with a `corpus` (see
+above). The report lists what each other entry called and wrote. Discovery
+refuses if the command never called one of the entries.
+
 It runs the command you give it, unchanged, with an observer loaded for that
 command only. It sees what your fixtures do and nothing else: it never calls
 production, and never runs the pipeline on inputs of its own. It writes three
@@ -348,7 +367,8 @@ a draft someone may have started answering.
   **fingerprints only**: no data value, no environment value, no exception
   message (types only). Fingerprints are keyed by a random key made for that
   one discovery and never written down, so they join events within it but
-  can't be looked up afterwards.
+  can't be looked up afterwards. An event from a run of an entry other than
+  the first is marked with that entry's number (`"entry": 1`).
 
 **No name that could carry a value is written either.**
 
@@ -402,9 +422,11 @@ not yet take in LangChain or LlamaIndex callbacks or OpenTelemetry spans.
   carries on and the report says it may be incomplete.
 - A program that inspects its own builtins can tell it is being observed:
   under the observer, `inspect.isbuiltin(open)` is false.
-- A file written is recorded by its path's fingerprint, not its content, so
-  discovery can't join two stages through a file one writes and another
-  reads.
+- A file written is recorded by its path's fingerprint, not its content.
+  Within a run, discovery can't join two stages through a file one writes
+  and another reads. Across entries, the `corpus` question says that a stage
+  read a file at the path another entry wrote to. It doesn't say that the
+  stage read what was written there.
 
 ## What this is not
 

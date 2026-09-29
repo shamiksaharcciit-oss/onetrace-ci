@@ -18,6 +18,11 @@ Every event names where it happened, the stage it belongs to (the function the e
 called, on the stack at that moment), and whether it happened during a run of the entry: in the
 entry's own calls, or in another thread or task while the entry was running.
 
+There may be several entries (an ingest run and a query run, say). The first is the one
+discovery drafts a plan for. An event in a run of another is marked with that entry's index
+(`"entry": 1`), so that what the other writes can be joined to what the first reads, and none
+of it is taken for the first's.
+
 WHAT IT NEVER RECORDS
 ---------------------
 A value. Contents are fingerprints: HMAC-SHA256 under a random key made for this discovery run
@@ -57,14 +62,14 @@ _REPO = os.path.normcase(os.path.abspath(os.environ[_PREFIX + "REPO"]))
 _KEY = bytes.fromhex(os.environ[_PREFIX + "KEY"])
 _EVENTS = os.environ[_PREFIX + "EVENTS"]
 _KNOWN = os.environ.get(_PREFIX + "KNOWN", "")
-_ENTRY_FILE = os.path.normcase(os.path.abspath(os.environ[_PREFIX + "ENTRY_FILE"]))
-_ENTRY_NAME = os.environ[_PREFIX + "ENTRY_FUNC"]
+#: [(file, function)]: the entry discovery drafts a plan for, then any others.
+_ENTRIES = [(os.path.normcase(os.path.abspath(f)), n) for f, n in json.loads(os.environ[_PREFIX + "ENTRIES"])]
 _SELF = os.path.normcase(os.path.abspath(__file__))
 
 _events = []
 _lines = {}
 _calls = {}
-_active = [0]              # runs of the entry that have started and not finished
+_active = [0] * len(_ENTRIES)   # by entry: its runs that have started and not finished
 _errors = {}
 _lock = threading.Lock()
 _local = threading.local()
@@ -282,14 +287,35 @@ def _named_function(frame):
 
 
 @functools.lru_cache(maxsize=None)
-def _in_entry_file(filename):
-    return os.path.normcase(os.path.abspath(filename)) == _ENTRY_FILE
+def _normalized(filename):
+    return os.path.normcase(os.path.abspath(filename))
+
+
+def _entry_of(frame):
+    """The index of the entry `frame` is a run of, or None."""
+    code = frame.f_code
+    for i, (file, name) in enumerate(_ENTRIES):
+        if (code.co_name == name and _normalized(code.co_filename) == file
+                and _qualname(code, frame.f_globals) == name):
+            return i
+    return None
 
 
 def _is_entry(frame):
-    code = frame.f_code
-    return (code.co_name == _ENTRY_NAME and _in_entry_file(code.co_filename)
-            and _qualname(code, frame.f_globals) == _ENTRY_NAME)
+    return _entry_of(frame) is not None
+
+
+def _running():
+    """The entry a run of which is under way, for code running outside it (in another thread or
+    task): the first entry, if one of its runs is, else the first other entry; None if none is."""
+    return next((i for i, n in enumerate(_active) if n > 0), None)
+
+
+def _tagged(event, entry):
+    """Mark an event from a run of an entry other than the first."""
+    if entry:
+        event["entry"] = entry
+    return event
 
 
 def _dotted(frame):
@@ -307,17 +333,19 @@ def _dotted(frame):
 
 
 def _where(frame):
-    """(site, stage, in_run, via, inside) for code running in `frame`, from the stack; None when
-    no user frame is on it (the observer, the standard library or a test runner acting alone),
-    or when it is the standard library reading source code to print a traceback. `inside` names
-    the passed-through function it ran in, when that is all there is between it and the entry."""
-    site, stage, in_run, child, via, inside = None, None, False, None, None, None
+    """(site, stage, in_run, via, inside, entry) for code running in `frame`, from the stack;
+    None when no user frame is on it (the observer, the standard library or a test runner acting
+    alone), or when it is the standard library reading source code to print a traceback.
+    `inside` names the passed-through function it ran in, when that is all there is between it
+    and the entry; `entry` is the index of the entry whose run it is in, if any."""
+    site, stage, in_run, child, via, inside, entry = None, None, False, None, None, None, None
     while frame is not None:
         code = frame.f_code
         if _is_user(code.co_filename):
             if site is None:
                 site = (_code_file(code.co_filename)[0], frame.f_lineno)
-            if _is_entry(frame):
+            entry = _entry_of(frame)
+            if entry is not None:
                 in_run = True
                 if child is not None:
                     stage = _dotted(child)
@@ -336,9 +364,9 @@ def _where(frame):
         frame = frame.f_back
     if site is None:
         return None
-    if not in_run and _active[0] > 0:
-        in_run = "elsewhere"            # another thread, or a task, while the entry was running
-    return site, stage, in_run, via, (inside if isinstance(inside, str) else None)
+    if not in_run and _running() is not None:
+        in_run, entry = "elsewhere", _running()     # another thread, or a task, while an entry ran
+    return site, stage, in_run, via, (inside if isinstance(inside, str) else None), entry
 
 
 def _third_party(filename):
@@ -386,8 +414,8 @@ def _record(kind, frame, **fields):
         found = _where(frame)
         if found is None:
             return
-        site, stage, in_run, via, inside = found
-        event = {"kind": kind, **fields, "site": "%s:%d" % site, "stage": stage, "in_run": in_run}
+        site, stage, in_run, via, inside, entry = found
+        event = _tagged({"kind": kind, **fields, "site": "%s:%d" % site, "stage": stage, "in_run": in_run}, entry)
         if via is not None:
             event["via"] = via            # an installed library's code made it, for the user's call
         if inside is not None:
@@ -500,6 +528,11 @@ def _known(kind, rel):
     """Whether a name may be written: `files` are those git tracks (outside a git work tree,
     those that existed before the run); `code` adds the .py files that existed before the run,
     so code a person is still writing keeps its name, and code made during the run does not."""
+    _load_known()
+    return os.path.normcase(rel.replace("/", os.sep)) in _known_names[kind]
+
+
+def _load_known():
     if not _known_names:
         with _Busy():
             try:
@@ -509,21 +542,41 @@ def _known(kind, rel):
                 loaded = {}
         for k in ("files", "code"):
             _known_names[k] = {os.path.normcase(p.replace("/", os.sep)) for p in loaded.get(k, ())}
-    return os.path.normcase(rel.replace("/", os.sep)) in _known_names[kind]
 
 
 _UNNAMED_CODE = "<a code file made during the run>"
 
 
+_known_dirs = set()
+
+
+def _under(rel):
+    """For a file git doesn't track: the nearest directory above it that holds a file git does
+    track (so its name is one git already has), as `data/`; `""` for the repository itself."""
+    if not _known_dirs:
+        _load_known()
+        for name in _known_names["files"]:
+            parts = name.split(os.sep)[:-1]
+            _known_dirs.update(os.sep.join(parts[:i]) for i in range(1, len(parts) + 1))
+        _known_dirs.add("")
+    parts = os.path.normcase(rel.replace("/", os.sep)).split(os.sep)[:-1]
+    real = rel.replace(os.sep, "/").split("/")[:-1]
+    for i in range(len(parts), 0, -1):
+        if os.sep.join(parts[:i]) in _known_dirs:
+            return "/".join(real[:i]) + "/"
+    return ""
+
+
 def _file_name(path):
-    """(name or None, where, package): a name only for a file git tracks."""
+    """(name or None, where, package, under): a name only for a file git tracks; for one it
+    doesn't, `under` is the nearest directory that holds one it does."""
     rel = _rel(path)
     if rel is None:
         package = _third_party(os.path.abspath(path))
-        return None, ("package" if package else "outside"), package
+        return None, ("package" if package else "outside"), package, None
     if _known("files", rel):
-        return rel, "repository", None
-    return None, "untracked", None
+        return rel, "repository", None, None
+    return None, "untracked", None, _under(rel)
 
 
 # ------------------------------------------------------------------ files
@@ -571,10 +624,12 @@ class _Open:
                 path = os.fspath(file)
                 if isinstance(path, bytes):
                     path = os.fsdecode(path)
-                name, where, package = _file_name(path)
+                name, where, package, under = _file_name(path)
                 fields = dict(name=name, where=where, path=_fp(os.fsencode(os.path.abspath(path))))
                 if package is not None:
                     fields["package"] = package
+                if under is not None:
+                    fields["under"] = under
                 if any(c in mode for c in "wax+"):
                     _record("file-write", sys._getframe(1), **fields)
                 else:
@@ -944,21 +999,21 @@ def _on_exception(frame, arg):
     with _Busy():
         found = _where(frame)
     if found is not None:
-        site, stage, in_run, _, _ = found
+        site, stage, in_run, _, _, entry = found
         with _lock:
-            _events.append({"kind": "exception", "type": exc_type.__name__,
-                            "site": "%s:%d" % site, "stage": stage, "in_run": in_run})
+            _events.append(_tagged({"kind": "exception", "type": exc_type.__name__,
+                                    "site": "%s:%d" % site, "stage": stage, "in_run": in_run}, entry))
 
 
 def _on_return(frame, arg):
     pending = _calls.get(id(frame))
-    entry = pending is None and _is_entry(frame)
+    entry = _entry_of(frame) if pending is None else None
     leaving = _raising.pop(id(frame), None) == frame.f_lasti
-    if (pending is None and not entry) or (not leaving and _suspends(frame)):
+    if (pending is None and entry is None) or (not leaving and _suspends(frame)):
         return
-    if entry:
+    if entry is not None:
         with _lock:
-            _active[0] = max(0, _active[0] - 1)
+            _active[entry] = max(0, _active[entry] - 1)
         return
     del _calls[id(frame)]
     if _returns(frame):
@@ -993,31 +1048,33 @@ def _on_call(frame):
     if not _is_user(code.co_filename):
         return None
     starting = _starts(frame)
-    if _is_entry(frame):
+    entry = _entry_of(frame)
+    if entry is not None:
         if starting:
             with _Busy():
-                entry = {"kind": "entry", "args": _args(frame)}
+                run = _tagged({"kind": "entry", "args": _args(frame)}, entry)
             with _lock:
-                _events.append(entry)
-                _active[0] += 1
+                _events.append(run)
+                _active[entry] += 1
         return _local_trace
     if not starting:
         return _local_trace
     caller = _caller(frame)
+    by = _entry_of(caller) if caller is not None else None
     if _transparent(frame):
-        if _named_function(frame) and caller is not None and _is_entry(caller):
+        if _named_function(frame) and by is not None:
             with _Busy():
-                passed = {"kind": "passed-call", "function": _dotted(frame),
-                          "site": "%s:%d" % (_code_file(caller.f_code.co_filename)[0], caller.f_lineno)}
+                passed = _tagged({"kind": "passed-call", "function": _dotted(frame),
+                                  "site": "%s:%d" % (_code_file(caller.f_code.co_filename)[0], caller.f_lineno)}, by)
             with _lock:
                 _events.append(passed)
         return _local_trace
-    if caller is not None and _is_entry(caller):
+    if by is not None:
         flavour = _flavour(code)
         with _Busy():
-            call = {"kind": "call", "function": _dotted(frame),
-                    "site": "%s:%d" % (_code_file(caller.f_code.co_filename)[0], caller.f_lineno),
-                    "args": _args(frame), "returned": None}
+            call = _tagged({"kind": "call", "function": _dotted(frame),
+                            "site": "%s:%d" % (_code_file(caller.f_code.co_filename)[0], caller.f_lineno),
+                            "args": _args(frame), "returned": None}, by)
             if flavour:
                 call["flavour"] = flavour
         if flavour in ("generator", "async generator"):
@@ -1028,10 +1085,10 @@ def _on_call(frame):
             _events.append(call)
         if call["returned"] is None:
             _calls[id(frame)] = call
-    elif caller is None and _active[0] > 0:
+    elif caller is None and _running() is not None:
         with _Busy():
-            other = {"kind": "elsewhere-call", "function": _dotted(frame),
-                     "site": "%s:%d" % (_code_file(code.co_filename)[0], code.co_firstlineno)}
+            other = _tagged({"kind": "elsewhere-call", "function": _dotted(frame),
+                             "site": "%s:%d" % (_code_file(code.co_filename)[0], code.co_firstlineno)}, _running())
         with _lock:
             _events.append(other)
     return _local_trace

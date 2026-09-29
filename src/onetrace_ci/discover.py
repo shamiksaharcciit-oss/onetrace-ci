@@ -9,6 +9,9 @@ calls production and never runs the pipeline on inputs of its own: it sees what 
 and nothing else. It writes three files: `onetrace-plan.draft.yaml`, `discovery-report.md` and
 `discovery-events.jsonl`, which holds fingerprints only. Discovery is not evidence, and nothing
 it drafts is a decision.
+
+`--entry` may be given more than once, when the fixtures also run an ingest: the plan is drafted
+for the first, and asks (`corpus`) which ingest run it reads.
 """
 from __future__ import annotations
 
@@ -107,12 +110,14 @@ COMMAND_TIMEOUT = 1800
 
 
 def observe(command: list[str], *, repo: Path, entry: str, events_path: Path,
-            env: dict | None = None, timeout: int | None = None) -> ObserveResult:
+            env: dict | None = None, timeout: int | None = None, others: list[str] = ()) -> ObserveResult:
     """Run `command` in `repo`, unchanged, with the observer loaded, and return what it recorded.
-    `events_path` is written afresh. `timeout` defaults to `COMMAND_TIMEOUT`."""
+    `events_path` is written afresh. `timeout` defaults to `COMMAND_TIMEOUT`. `others` are
+    further entries (an ingest run, say), observed in the same command; an event in a run of
+    one is marked with its index, counting from 1."""
     timeout = COMMAND_TIMEOUT if timeout is None else timeout
     repo = repo.resolve()
-    efile = entry_file(repo, entry)
+    entries = [[str(entry_file(repo, e)), e.partition(":")[2]] for e in (entry, *others)]
     names = known_names(repo)
     events_path = Path(events_path).resolve()
     events_path.parent.mkdir(parents=True, exist_ok=True)
@@ -129,8 +134,7 @@ def observe(command: list[str], *, repo: Path, entry: str, events_path: Path,
         child[_PREFIX + "REPO"] = str(repo)
         child[_PREFIX + "KEY"] = secrets.token_hex(32)      # this run's only; never written
         child[_PREFIX + "EVENTS"] = str(parts)
-        child[_PREFIX + "ENTRY_FILE"] = str(efile)
-        child[_PREFIX + "ENTRY_FUNC"] = entry.partition(":")[2]
+        child[_PREFIX + "ENTRIES"] = json.dumps(entries)
         try:
             done = subprocess.run(command, cwd=repo, env=child, capture_output=True, text=True,
                                   timeout=timeout)
@@ -239,6 +243,9 @@ def render_draft(d: Discovery) -> str:
         lines.append(f"    rederivable_note: {_q(decide(_NOTE.format(name=s.name)))}")
         if s.settings:
             lines.append(f"    config: {_q(decide('record these settings? observed ' + '; '.join(s.settings)))}")
+    if d.corpus:
+        #: Discovery doesn't guess which ingest run a query reads: it says what it saw.
+        lines.append(f"corpus: {_q(decide('which ingest run does the query read? ' + '; '.join(d.corpus) + '. Answer with from: (a run folder or a manifest digest) and stages: (where the link is recorded), or delete this line for no link'))}")
     boundary_q = ("approve these boundaries? " + " | ".join(d.boundaries)) if d.boundaries else \
         "are there boundaries to approve? none were seen"
     lines += [
@@ -300,6 +307,10 @@ def render_report(d: Discovery, open_questions: int) -> str:
         out += [title, ""] + [f"- {r}" for r in s.reasons] + [""]
     if d.passed:
         out += ["## Called by the entry, but not proposed", ""] + [f"- {p}" for p in d.passed] + [""]
+    if d.others:
+        out += ["## Other entries", "", "Observed in the same command, so that a file one writes can be joined, "
+                f"by its path, to a read in a run of `{d.entry}`. The draft plans only `{d.entry}`.", ""]
+        out += [f"- {o}" for o in d.others] + [""]
     out += ["## Proposed boundaries", ""]
     out += [f"- {b}" for b in d.boundaries] or ["None seen."]
     out += ["", "## Branches the fixtures never took", ""]
@@ -323,8 +334,10 @@ def render_report(d: Discovery, open_questions: int) -> str:
 
 # ------------------------------------------------------------------ the command
 
-def discover(*, entry: str, command: list[str], repo: Path, out_dir: Path) -> tuple[Discovery, int]:
-    """Observe, infer, and write the three files into `out_dir`. Returns (discovery, open questions)."""
+def discover(*, entry: str, command: list[str], repo: Path, out_dir: Path,
+             others: list[str] = ()) -> tuple[Discovery, int]:
+    """Observe, infer, and write the three files into `out_dir`. Returns (discovery, open questions).
+    `others` are further entries: see `observe`."""
     from onetrace_ci.plan import find_open_questions, read_document
     repo = repo.resolve()
     out_dir = out_dir.resolve()
@@ -334,7 +347,7 @@ def discover(*, entry: str, command: list[str], repo: Path, out_dir: Path) -> tu
                                   f"(a person may have started answering it)")
     with tempfile.TemporaryDirectory(prefix="onetrace-ci-events-") as tmp:
         events_tmp = Path(tmp) / EVENTS
-        result = observe(command, repo=repo, entry=entry, events_path=events_tmp)
+        result = observe(command, repo=repo, entry=entry, events_path=events_tmp, others=others)
         if result.returncode != 0:
             raise DiscoverRefused(f"the command exited {result.returncode}; discovery drafts only from "
                                   f"fixtures that pass")
@@ -343,9 +356,14 @@ def discover(*, entry: str, command: list[str], repo: Path, out_dir: Path) -> tu
             raise DiscoverRefused("the observer never loaded in the command: its interpreter ignored "
                                   "PYTHONPATH (-E or -I), it is not Python, or it ended without running "
                                   "its exit handlers")
-        if "entry" not in kinds:
+        ran = {e.get("entry", 0) for e in result.events if e["kind"] == "entry"}
+        if 0 not in ran:
             raise DiscoverRefused(f"the command never called {entry}, so there is nothing to draft from")
-        d = infer(repo, entry, command, result.returncode, result.events, result.lines)
+        for i, other in enumerate(others, start=1):
+            if i not in ran:
+                raise DiscoverRefused(f"the command never called {other}, given by --entry; discovery asks "
+                                      f"which of its runs {entry} reads only from a command that runs both")
+        d = infer(repo, entry, command, result.returncode, result.events, result.lines, others)
         d.processes = result.processes
         draft = render_draft(d)
         count = len(find_open_questions(read_document(draft, source=DRAFT)))
@@ -361,8 +379,11 @@ def main(argv: list[str] | None = None) -> int:
     split = argv.index("--") if "--" in argv else len(argv)
     parser = argparse.ArgumentParser(
         prog="onetrace-ci discover",
-        usage="onetrace-ci discover --entry module:function [--repo R] [--out-dir D] -- CMD...")
-    parser.add_argument("--entry", required=True, help="module.path:function, the function that is one run")
+        usage="onetrace-ci discover --entry module:function [--entry module:function ...] [--repo R] "
+              "[--out-dir D] -- CMD...")
+    parser.add_argument("--entry", required=True, action="append",
+                        help="module.path:function, the function that is one run. The plan is drafted for "
+                             "the first; give another (an ingest run) to be asked which of its runs the first reads")
     parser.add_argument("--repo", default=".", type=Path)
     parser.add_argument("--out-dir", default=".", type=Path)
     args = parser.parse_args(argv[:split])       # --help, and a missing --entry, are handled here
@@ -371,8 +392,9 @@ def main(argv: list[str] | None = None) -> int:
         print(format_refusal("discover", ["the command to observe is missing: put it after `--`, "
                                           "for example `-- pytest tests/test_pipeline.py`"]), file=sys.stderr)
         return 1
+    entry, *others = dict.fromkeys(args.entry)
     try:
-        d, count = discover(entry=args.entry, command=command, repo=args.repo, out_dir=args.out_dir)
+        d, count = discover(entry=entry, command=command, repo=args.repo, out_dir=args.out_dir, others=others)
     except DiscoverRefused as e:
         print(format_refusal("discover", [str(e)]), file=sys.stderr)
         return 1

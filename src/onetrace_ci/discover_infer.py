@@ -54,6 +54,8 @@ class Discovery:
     passed: list[str] = field(default_factory=list)
     processes: int = 0            # the Python processes observed
     locked: dict = field(default_factory=dict)   # normalized distribution name -> (version, lock file)
+    others: list[str] = field(default_factory=list)   # what each other entry did, for the report
+    corpus: list[str] = field(default_factory=list)   # the corpus question's evidence, one per other entry
 
 
 _PIN = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*==\s*([^\s;\\#]+)")
@@ -142,7 +144,10 @@ _FLAVOURS = {
 
 
 def infer(repo: Path, entry: str, command: list[str], returncode: int, events: list[dict],
-          lines: dict) -> Discovery:
+          lines: dict, others: list[str] = ()) -> Discovery:
+    #: Events from a run of another entry are marked with its index; everything below but the
+    #: other entries' summary reads only the planned entry's.
+    observed, events = events, [e for e in events if not e.get("entry")]
     entry_args = dict(next((e["args"] for e in events if e["kind"] == "entry"), []))
     #: The packages the process that ran the entry imported: under a launcher (tox, a test
     #: controller) that is a child process, and the launcher's own imports are not the pipeline's.
@@ -305,9 +310,71 @@ def infer(repo: Path, entry: str, command: list[str], returncode: int, events: l
                     + (f", {n} times in all" if n > len(sites) else "")
                     + "; calls it makes count as the entry's own, and it is not proposed: instrument wraps "
                       "only module-level functions" for function, (sites, n) in passed.items()]
+    other_lines, corpus = _other_entries(entry, list(others), observed, stages)
     return Discovery(entry, command, returncode, ordered, list(dict.fromkeys(unaccounted)),
                      unexercised, boundaries, sum(e.get("count", 1) for e in failures),
-                     [e["where"] for e in failures], passed_lines, locked=locked_versions(repo))
+                     [e["where"] for e in failures], passed_lines, locked=locked_versions(repo),
+                     others=other_lines, corpus=corpus)
+
+
+def _files(written: dict) -> tuple[str, str]:
+    """("2 files", "(`data/a.json`; 1 not tracked by git, under data/)") for file events by path."""
+    events = list(written.values())
+    named = sorted(e["name"] for e in events if e.get("name"))
+    untracked = [e for e in events if not e.get("name") and e.get("where") == "untracked"]
+    outside = len(events) - len(named) - len(untracked)
+    parts = [_list([f"`{n}`" for n in named])] if named else []
+    if untracked:
+        dirs = list(dict.fromkeys(e.get("under") or "the repository root" for e in untracked))
+        head = "not tracked by git" if len(untracked) == len(events) else f"{len(untracked)} not tracked by git"
+        parts.append(f"{head}, under {_list(dirs)}")
+    if outside:
+        parts.append(f"{outside} outside the repository")
+    return f"{len(events)} file{'' if len(events) == 1 else 's'}", "(" + "; ".join(parts) + ")"
+
+
+def _other_entries(entry: str, others: list[str], events: list[dict], stages: dict) -> tuple[list[str], list[str]]:
+    """For each entry other than the planned one (an ingest run, say): what it did, for the
+    report, and whether the planned entry read a file it wrote, for the corpus question. Reads
+    and writes are joined by path: what was written is not fingerprinted, so this says the
+    query read the file the ingest wrote, not that it read what the ingest wrote there."""
+    readers: dict[str, list[str]] = {}          # path fingerprint -> who in the planned entry read it
+    for e in events:
+        if e["kind"] == "file-read" and not e.get("entry") and e.get("in_run") and e.get("path"):
+            s = stages.get(e.get("stage")) if e.get("stage") else None
+            who = s.name if s is not None else f"{entry.rpartition(':')[2]} itself"
+            if who not in readers.setdefault(e["path"], []):
+                readers[e["path"]].append(who)
+    lines, evidence = [], []
+    for i, other in enumerate(others, start=1):
+        own = [e for e in events if e.get("entry") == i]
+        runs = sum(1 for e in own if e["kind"] == "entry")
+        called = list(dict.fromkeys(e["function"] for e in own if e["kind"] == "call"))
+        written: dict[str, dict] = {}
+        for e in own:
+            if e["kind"] == "file-write" and e.get("path"):
+                written.setdefault(e["path"], e)
+        joined = {p: e for p, e in written.items() if p in readers}
+        who = list(dict.fromkeys(w for p in joined for w in readers[p]))
+        line = (f"`{other}` ran {'once' if runs == 1 else f'{runs} times'}. "
+                + (f"It called {_list(called)}. " if called else "It called no function of the repository directly. "))
+        if not written:
+            line += "It wrote no file."
+        else:
+            count, detail = _files(written)
+            if not joined:
+                line += f"It wrote {count} {detail}; the planned entry " + (
+                    "did not read it." if len(written) == 1 else "read none of them.")
+            else:
+                share = "it" if len(written) == 1 else ("them all" if len(joined) == len(written) else f"{len(joined)} of them")
+                line += f"It wrote {count} {detail}, and {_list(who)} read {share}."
+        lines.append(line)
+        if joined:
+            count, detail = _files(joined)
+            evidence.append(f"{_list(who)} read {count} that {other} wrote {detail}")
+        else:
+            evidence.append(f"no file that {other} wrote was read in a run of {entry}")
+    return lines, evidence
 
 
 def _list(items) -> str:

@@ -21,7 +21,7 @@ RUN = [sys.executable, "-c", f"from pipeline.main import run; run({REQUEST!r})"]
 
 
 def discover_in(root, monkeypatch, capsys, overrides=None, command=None, entry="pipeline.main:run",
-                extra_path=(), before=None):
+                extra_path=(), before=None, entries=None):
     """Build the fixture repository under `root` with `overrides`, run discover, and return
     (rc, draft, report, events, stderr); a file not written is None."""
     repo, stubs = make_discover_repo(root, overrides)
@@ -30,7 +30,8 @@ def discover_in(root, monkeypatch, capsys, overrides=None, command=None, entry="
     monkeypatch.setenv("LLM_API_KEY", MARKER)
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(stubs), *(str(repo / p) for p in extra_path)]))
     out = root / "out"
-    rc = main(["--entry", entry, "--repo", str(repo), "--out-dir", str(out), "--", *(command or RUN)])
+    flags = [a for e in (entries or [entry]) for a in ("--entry", e)]
+    rc = main([*flags, "--repo", str(repo), "--out-dir", str(out), "--", *(command or RUN)])
     files = [out / n for n in ("onetrace-plan.draft.yaml", "discovery-report.md", "discovery-events.jsonl")]
     texts = [f.read_text(encoding="utf-8") if f.exists() else None for f in files]
     return (rc, *texts, capsys.readouterr().err)
@@ -1281,3 +1282,113 @@ def test_a_package_the_lock_file_pins_the_same_has_no_note(tmp_path, monkeypatch
     examined(1, "the packages section")
     assert rc == 0, err
     assert "retrieve: PyYAML 6.0.3" in packages and "names" not in packages
+
+
+# ------------------------------------------------------------------ several entries: the corpus question
+
+INGEST = """\
+import json
+from pathlib import Path
+
+INDEX = Path(__file__).resolve().parents[1] / "data" / "index"
+
+
+def chunk(corpus):
+    return [{"id": d["id"], "text": d["text"]} for d in corpus]
+
+
+def run():
+    corpus = json.loads((INDEX.parent / "corpus.json").read_text(encoding="utf-8"))
+    INDEX.mkdir(exist_ok=True)
+    (INDEX / "chunks.json").write_text(json.dumps(chunk(corpus)), encoding="utf-8")
+"""
+
+QUERY_RETRIEVAL = """\
+import json
+from pathlib import Path
+
+INDEX = Path(__file__).resolve().parents[1] / "data" / "index"
+
+
+def retrieve(request):
+    docs = json.loads((INDEX / "chunks.json").read_text(encoding="utf-8"))
+    words = set(request.lower().split())
+    return sorted(docs, key=lambda d: -len(words & set(d["text"].lower().split())))[:1]
+"""
+
+INGEST_THEN_QUERY = [sys.executable, "-c", "from pipeline.ingest import run as ingest; "
+                     f"from pipeline.main import run; ingest(); run({REQUEST!r})"]
+BOTH = ["pipeline.main:run", "pipeline.ingest:run"]
+
+
+def test_a_query_that_reads_what_an_ingest_wrote_is_asked_which_ingest_run(tmp_path, monkeypatch, capsys, examined):
+    """The first --entry is the run the draft plans; a further one is observed in the same
+    command, so that what it writes can be joined, by path fingerprint, to what the first reads."""
+    rc, draft, report, _, err = discover_in(
+        tmp_path, monkeypatch, capsys, {"repo/pipeline/ingest.py": INGEST, "repo/pipeline/retrieval.py": QUERY_RETRIEVAL},
+        command=INGEST_THEN_QUERY, entries=BOTH)
+    doc = read_document(draft, source="draft")
+    examined(2, "the draft and the report")
+    assert rc == 0, err
+    assert doc["entry"] == "pipeline.main:run"
+    assert doc["corpus"] == ("DECIDE: which ingest run does the query read? retrieve read 1 file that "
+                             "pipeline.ingest:run wrote (not tracked by git, under data/). Answer with from: "
+                             "(a run folder or a manifest digest) and stages: (where the link is recorded), "
+                             "or delete this line for no link")
+    other = section(report, "Other entries")
+    assert "- `pipeline.ingest:run` ran once. It called pipeline.ingest:chunk. It wrote 1 file (not tracked " \
+           "by git, under data/), and retrieve read it." in other
+
+
+def test_another_entry_s_calls_and_files_are_not_the_planned_entry_s(tmp_path, monkeypatch, capsys, examined):
+    """Without the tag, the ingest's own call would be proposed as a stage of the query, and its
+    reads and writes listed as reads no stage explains."""
+    rc, draft, report, _, err = discover_in(
+        tmp_path, monkeypatch, capsys, {"repo/pipeline/ingest.py": INGEST, "repo/pipeline/retrieval.py": QUERY_RETRIEVAL},
+        command=INGEST_THEN_QUERY, entries=BOTH)
+    examined(2, "the stages and the reads no stage explains")
+    assert rc == 0, err
+    assert [s.get("function") for s in stages_of(draft)] == [None, "pipeline.retrieval:retrieve", "pipeline.llm:answer"]
+    unexplained = section(report, "Reads no stage explains")
+    assert "written" not in unexplained and "ingest.py" not in unexplained
+
+
+def test_the_directory_named_for_a_file_another_entry_wrote_is_one_git_tracks_a_file_in(
+        tmp_path, monkeypatch, capsys, examined):
+    """`data/index` holds no file git tracks, so its name is not written; `data` holds one."""
+    rc, draft, report, events, err = discover_in(
+        tmp_path, monkeypatch, capsys, {"repo/pipeline/ingest.py": INGEST, "repo/pipeline/retrieval.py": QUERY_RETRIEVAL},
+        command=INGEST_THEN_QUERY, entries=BOTH)
+    examined(3, "the draft, the report and the events")
+    assert rc == 0, err
+    for text in (draft, report, events):
+        assert "data/index" not in text and "chunks" not in text
+    assert "under data/" in read_document(draft, source="draft")["corpus"]
+
+
+def test_another_entry_that_wrote_nothing_the_query_read_is_still_asked_about(tmp_path, monkeypatch, capsys, examined):
+    rc, draft, report, _, err = discover_in(
+        tmp_path, monkeypatch, capsys, {"repo/pipeline/ingest.py": INGEST}, command=INGEST_THEN_QUERY, entries=BOTH)
+    corpus = read_document(draft, source="draft")["corpus"]
+    examined(2, "the corpus question and the report")
+    assert rc == 0, err
+    assert corpus.startswith("DECIDE: which ingest run does the query read? no file that pipeline.ingest:run "
+                             "wrote was read in a run of pipeline.main:run. ")
+    assert "It wrote 1 file (not tracked by git, under data/); the planned entry did not read it." in \
+        section(report, "Other entries")
+
+
+def test_another_entry_the_command_never_called_is_refused(tmp_path, monkeypatch, capsys, examined):
+    rc, draft, _, _, err = discover_in(
+        tmp_path, monkeypatch, capsys, {"repo/pipeline/ingest.py": INGEST}, entries=BOTH)
+    examined(1, "the refusal")
+    assert rc == 1 and draft is None
+    assert "the command never called pipeline.ingest:run" in err and "fix:" in err
+
+
+def test_one_entry_drafts_no_corpus_question(tmp_path, monkeypatch, capsys, examined):
+    rc, draft, report, _, err = discover_in(tmp_path, monkeypatch, capsys)
+    examined(2, "the draft and the report")
+    assert rc == 0, err
+    assert "corpus" not in read_document(draft, source="draft")
+    assert "## Other entries" not in report
