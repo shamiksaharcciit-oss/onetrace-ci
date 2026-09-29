@@ -1248,3 +1248,36 @@ def test_reads_through_a_pathlib_imported_before_the_observer_are_seen(tmp_path,
     examined(1, "the retrieve stage's files")
     assert rc == 0, err
     assert retrieve.get("files") == ["data/corpus.json"]
+
+
+# ------------------------------------------------------------------ the lock file against what ran
+
+def test_a_package_the_lock_file_pins_differently_is_noted(tmp_path, monkeypatch, capsys, examined):
+    """The version recorded is the installed one, which is what ran; where the repository's lock
+    file names another, the report says so."""
+    from tests.discover_fixtures import RETRIEVAL
+    retrieval = RETRIEVAL.replace("import json\n", "import json\n\nimport yaml\n").replace(
+        "    docs = json.loads(", "    yaml.safe_load('[1]')\n    docs = json.loads(")
+    lock = "# pinned\npyyaml==0.0.1 \\n    --hash=sha256:" + "0" * 64 + "\n"
+    rc, draft, report, _, err = discover_in(tmp_path, monkeypatch, capsys,
+                                            {"repo/pipeline/retrieval.py": retrieval, "repo/requirements.lock": lock})
+    packages = section(report, "Packages")
+    retrieve = next(s for s in stages_of(draft) if s["name"] == "retrieve")
+    examined(1, "the packages section")
+    assert rc == 0, err
+    assert retrieve["instrument"]["package"] == "PyYAML"
+    assert "retrieve: PyYAML 6.0.3" in packages
+    assert "requirements.lock names 0.0.1; the installed 6.0.3 is what ran, and is what is recorded" in packages
+
+
+def test_a_package_the_lock_file_pins_the_same_has_no_note(tmp_path, monkeypatch, capsys, examined):
+    from tests.discover_fixtures import RETRIEVAL
+    retrieval = RETRIEVAL.replace("import json\n", "import json\n\nimport yaml\n").replace(
+        "    docs = json.loads(", "    yaml.safe_load('[1]')\n    docs = json.loads(")
+    rc, _, report, _, err = discover_in(tmp_path, monkeypatch, capsys,
+                                        {"repo/pipeline/retrieval.py": retrieval,
+                                         "repo/requirements.txt": "PyYAML==6.0.3\n"})
+    packages = section(report, "Packages")
+    examined(1, "the packages section")
+    assert rc == 0, err
+    assert "retrieve: PyYAML 6.0.3" in packages and "names" not in packages

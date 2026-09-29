@@ -53,6 +53,31 @@ class Discovery:
     observer_failures: list[str] = field(default_factory=list)
     passed: list[str] = field(default_factory=list)
     processes: int = 0            # the Python processes observed
+    locked: dict = field(default_factory=dict)   # normalized distribution name -> (version, lock file)
+
+
+_PIN = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*==\s*([^\s;\\#]+)")
+
+
+def normalized(name: str) -> str:
+    """A distribution name as package indexes compare them."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def locked_versions(repo: Path) -> dict:
+    """The `name==version` pins of the pip-style lock files at the repository's root
+    (`requirements*.txt` and `*.lock`), by normalized name. Other lock formats are not read."""
+    locked = {}
+    for path in sorted([*repo.glob("requirements*.txt"), *repo.glob("*.lock")]):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for line in text.splitlines():
+            m = _PIN.match(line)
+            if m:
+                locked.setdefault(normalized(m.group(1)), (m.group(2), path.name))
+    return locked
 
 
 def _suggest(function: str) -> str:
@@ -282,7 +307,7 @@ def infer(repo: Path, entry: str, command: list[str], returncode: int, events: l
                       "only module-level functions" for function, (sites, n) in passed.items()]
     return Discovery(entry, command, returncode, ordered, list(dict.fromkeys(unaccounted)),
                      unexercised, boundaries, sum(e.get("count", 1) for e in failures),
-                     [e["where"] for e in failures], passed_lines)
+                     [e["where"] for e in failures], passed_lines, locked=locked_versions(repo))
 
 
 def _list(items) -> str:

@@ -24,7 +24,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from onetrace_ci.discover_infer import Discovery, infer, unnamed
+from onetrace_ci.discover_infer import Discovery, infer, normalized, unnamed
 from onetrace_ci.errors import format_refusal
 
 _PREFIX = "ONETRACE_CI_DISCOVER_"
@@ -305,7 +305,15 @@ def render_report(d: Discovery, open_questions: int) -> str:
     out += ["", "## Branches the fixtures never took", ""]
     out += [f"- {u}" for u in d.unexercised] or ["None: every branch in the entry and stage functions ran."]
     out += ["", "## Packages", ""]
-    pk = [f"- {s.name}: {dist} {version}" for s in d.stages for _, dist, version in s.packages]
+    pk = []
+    for s in d.stages:
+        for _, dist, version in s.packages:
+            line = f"- {s.name}: {dist} {version}"
+            locked, lock_file = d.locked.get(normalized(dist), (None, None))
+            if locked is not None and locked != version and not version.startswith("not seen"):
+                line += (f" ({lock_file} names {locked}; the installed {version} is what ran, and is what is "
+                         f"recorded)")
+            pk.append(line)
     out += pk or ["None: no stage imports a third-party package."]
     out += ["", "## Settings seen in the code", ""]
     st = [f"- {s.name}: {x}" for s in d.stages for x in s.settings]
