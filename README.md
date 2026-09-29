@@ -422,43 +422,61 @@ def retrieve():
   `rederivable`, the note, `files`, and `instrument=ot.pkg(...)` with its
   `kind` and `config`. Generated code states each one, so a run of it never
   lists a field in `assertions.undeclared`.
-- **A stage's `constants`** become `ot.constant(name, value)` calls at the top
-  of its body, the only edit made inside a body.
+- **A stage's `constants`** become `ot.constant("name", name)` calls at the
+  top of its body, after its docstring: the only edit made inside a body.
+  Calls in that form at the top of a stage's body are the generator's, and
+  change with the plan; any other `ot.constant` call is yours, and is kept.
 - **One `import onetrace as ot`** in each module it touches.
-- **`async def` stages** are decorated like any other. A stage called more
-  than once per run (at several places, or in a loop) needs `repeats: true`
-  in the plan, and the SDK numbers each call. One stage's return value passed
-  straight to the next (`answer(retrieve())`) is two stages and one edge.
+- **Each stage is called directly in the entry function's own body**, so
+  onetrace-ci can see how often it runs and what it is given. A stage called
+  more than once per run (at several places, or in a loop) needs
+  `repeats: true` in the plan, and the SDK numbers each call. One stage's
+  return value passed straight to the next (`answer(retrieve())`) is two
+  stages and one edge. An `async def` stage is decorated like any other; each
+  call of it is awaited where it is made (`await answer(...)`), or given
+  straight to `asyncio.run`, `asyncio.gather` or a pool. A stage may be handed
+  to one concurrent call (`pool.submit(retrieve, q)`).
 
 Run again on code it decorated from the same plan, it writes an empty patch.
 A decorator whose arguments differ from the plan is replaced, and the patch
-shows the old and the new.
+shows the old and the new. One that says the same, laid out differently, is
+left alone.
 
-**A stage given anything but another stage's return value needs its `trust`
-in the plan.** The SDK records such an argument (a literal, an expression, a
-value that came back through a future) as an in-memory input, with the
-stage's trust class. A plan that leaves it out is refused, naming the stage
-and the call.
+**A stage given anything onetrace-ci can't see to be another stage's return
+value, unchanged, needs its `trust` in the plan.** The SDK records an
+argument that is not a stage's return value (a literal, an expression, a
+value changed in place after the stage returned it) as an in-memory input,
+with the stage's trust class. onetrace-ci asks for the trust class wherever it
+cannot rule that out: a value that came back through a future, a stage handed
+to a pool, and a parameter left to its default all count. A plan that leaves
+it out is refused, naming the stage and the call.
 
 **Every parameter of the entry is recorded.** The SDK records each parameter
 of the run function, so the plan lists every one in its intake stage's
-`memory_inputs`, and a plan that leaves one out is refused, naming it.
-onetrace-ci reads code, not types: a parameter the SDK cannot encode (a client
-object, say) is found only at run time, when the SDK raises
-`UnencodableValue` naming it. The fix is an encoder for that type, registered
-with `ot.encoder(type, fn)`. An entry with parameters is not generated yet
-(see [What waits for the next onetrace release](#what-waits-for-the-next-onetrace-release)).
+`memory_inputs`, and a plan that leaves one out is refused, naming it. An
+entry with parameters is not generated yet (see
+[What waits for the next onetrace release](#what-waits-for-the-next-onetrace-release)).
+
+**onetrace-ci reads code, not types.** A value the SDK cannot encode (a
+client object passed as a parameter, say, or returned by a stage) is found
+only at run time, when the SDK raises `UnencodableValue` naming the stage,
+the value and its type. The fix is an encoder for that type, registered with
+`ot.encoder(type, fn)`.
 
 In decorator style it refuses, with the file and line (or the plan field):
 
 - a missing meaning field, or a `DECIDE:` question left open;
 - a function it cannot resolve, a lambda, a generator or async generator, a
   class, or a name bound to anything but a function definition;
-- a stage that calls another stage inside its own body;
-- a stage the entry function never calls, and a stage's name shadowed there;
+- a stage that calls or uses another stage, in its own body or through the
+  repository's functions it calls;
+- a stage the entry function never calls directly, and a stage's name
+  shadowed there;
+- a stage reached some other way: through a variable, a helper function, a
+  nested function or lambda, or (async) a call not awaited where it is made;
 - a stage that may run more than once without `repeats: true`;
 - an `@ot.stage` with another name, or on a function the plan names no stage
-  for;
+  for, in a module the patch touches or the entry imports;
 - a function stage named `intake` (the SDK's name for the entry's
   parameters), and the name `ot` bound in a module it decorates;
 - a `Recorder` already created, and code already instrumented in wrapper

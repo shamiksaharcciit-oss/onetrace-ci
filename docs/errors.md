@@ -89,9 +89,9 @@ The function the plan names cannot be found by reading the code: its module is m
 
 ## not-a-function
 
-A stage is a lambda, a generator, a class or an assigned value (or, in wrapper style, an async function), or is the entry function itself, or shares its function with another stage.
+A stage is a lambda, a generator, a class or an assigned value (or, in wrapper style, an async function), or is the entry function itself, or shares its function with another stage; or the entry function is a generator.
 
-**Fix:** Make each stage a named `def` that returns one value (not a lambda, generator or class; `async def` in decorator style only), distinct from the entry function and from the other stages.
+**Fix:** Make each stage a named `def` that returns one value (not a lambda, generator or class; `async def` in decorator style only), distinct from the entry function and from the other stages; and make the entry function one that returns, not a generator.
 
 ## already-decorated
 
@@ -107,9 +107,9 @@ One stage is called inside another: in its arguments, or from inside its body.
 
 ## dynamic-dispatch
 
-A stage is reached through a variable, a table or `getattr`, so which function runs cannot be read from the code.
+A stage is reached some way other than a direct call in the entry function's own body: through a variable, a table, `getattr`, a helper function, a nested function or lambda, or (for an async stage) a coroutine not awaited where it is made. Which function runs, how often, and whether its calls overlap cannot be read from the code.
 
-**Fix:** Call the stage directly by name (`retrieve(q)`), not through a variable, table or getattr.
+**Fix:** Call the stage directly by name, in the entry function's own body (`retrieve(q)`; `await retrieve(q)` for an async stage), not through a variable, table, getattr, helper, nested function or lambda. To run it in a pool, hand it to one call (`pool.submit(retrieve, q)`).
 
 ## star-import
 

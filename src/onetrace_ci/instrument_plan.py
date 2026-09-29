@@ -585,7 +585,8 @@ def _check_entries(entries: list[tuple[int, EntrySpec]], problems: _Problems) ->
             if spec.entry == other.entry:
                 problems.add(f"entries[{i}].entry", f"{spec.entry} is also entries[{j}]'s entry; each entry "
                                                     f"is one run type")
-            if spec.run_dir == other.run_dir:
+            #: As paths: `runs/{run_id}` and `runs/{run_id}/` are one folder.
+            if PurePosixPath(spec.run_dir) == PurePosixPath(other.run_dir):
                 problems.add(f"entries[{i}].run_dir", f"{spec.run_dir!r} is also entries[{j}]'s; each entry's "
                                                       f"runs are written to a folder of their own")
     for i, spec in entries:

@@ -52,7 +52,8 @@ CODES: list[tuple[str, str, str]] = [
                       r"give the same generated name|a stage without a function has no parameters|"
                       r"names a function; name the ingest stage|a plan with entries has no top-level|"
                       r"is also entries\[|not an entries field|is a stage of this entry|"
-                      r"is not a stage of another entry|is named twice; each instance",
+                      r"is not a stage of another entry|is named twice; each instance|"
+                      r"\.constants: '[^']*' cannot be resolved",
      "Correct the named field: the message says which values it accepts."),
     ("class-method", r"names a class method",
      "Make the stage a module-level function (a method can call it), and name that function."),
@@ -66,7 +67,7 @@ CODES: list[tuple[str, str, str]] = [
                        r"is the entry function itself|two stages cannot share one function",
      "Make each stage a named `def` that returns one value (not a lambda, generator or class; "
      "`async def` in decorator style only), distinct from the entry function and from the other "
-     "stages."),
+     "stages; and make the entry function one that returns, not a generator."),
     ("already-decorated", r"is already decorated as",
      "Make the existing `@ot.stage` agree with the plan: the same stage name, on the function the "
      "plan names (or remove it). onetrace-ci replaces a matching decorator's arguments; it never "
@@ -75,7 +76,9 @@ CODES: list[tuple[str, str, str]] = [
      "Call each stage once, on its own, from the entry function; don't call one stage from inside "
      "another."),
     ("dynamic-dispatch", r"dynamic dispatch",
-     "Call the stage directly by name (`retrieve(q)`), not through a variable, table or getattr."),
+     "Call the stage directly by name, in the entry function's own body (`retrieve(q)`; `await "
+     "retrieve(q)` for an async stage), not through a variable, table, getattr, helper, nested "
+     "function or lambda. To run it in a pool, hand it to one call (`pool.submit(retrieve, q)`)."),
     ("star-import", r"star import",
      "Import the names you use explicitly (`from pkg import retrieve`)."),
     ("stage-placement", r"at the top level of|in one statement|called conditionally|inside an assert|"

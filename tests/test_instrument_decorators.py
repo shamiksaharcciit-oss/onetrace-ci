@@ -104,6 +104,51 @@ def test_a_changed_constants_list_replaces_the_calls_at_the_top_of_the_body(tmp_
     assert 'def answer(passages):\n    """Answer from the best passage."""\n    return' in llm
 
 
+def test_constants_go_after_a_docstring_written_on_one_line_with_the_code(tmp_path, examined):
+    llm = 'def answer(passages): """Answer from the best passage."""; return {"answer": passages[0]["text"]}\n'
+    plan = _with('    rederivable: "false"\n', '    rederivable: "false"\n    constants: [passages]\n')
+    repo = make_repo(tmp_path / "repo", {"pipeline/llm.py": llm, "onetrace-plan.yaml": plan})
+    _apply(repo, _patch(repo).patch, tmp_path)
+    text = _read(repo, "pipeline/llm.py")
+    examined(1, "the stage module")
+    assert ('def answer(passages):\n    """Answer from the best passage."""\n    ot.constant("passages", passages)\n'
+            '    return {"answer": passages[0]["text"]}\n') in text
+    assert _patch(repo).files == []
+
+
+def test_a_local_named_like_a_helper_is_not_the_helper(tmp_path, examined):
+    """`fetch` in the entry is its local, not the module's `fetch` that runs a stage."""
+    main_py = MAIN.replace('    """Retrieve, then answer."""\n',
+                           '    """Retrieve, then answer."""\n    fetch = len\n    fetch("x")\n') + (
+        "\n\ndef fetch():\n    return retrieve()\n")
+    repo = make_repo(tmp_path / "repo", {"pipeline/main.py": main_py})
+    result = _patch(repo)
+    examined(1, "the patch for an entry with a local named like a helper")
+    assert "pipeline/main.py" in result.files
+
+
+def test_a_person_s_own_ot_constant_call_is_kept(tmp_path, examined):
+    llm = 'import onetrace as ot\n\n\n' + LLM.replace(
+        '    """Answer from the best passage."""\n',
+        '    """Answer from the best passage."""\n    ot.constant("model", "m-1")\n')
+    repo = make_repo(tmp_path / "repo", {"pipeline/llm.py": llm})
+    _apply(repo, _patch(repo).patch, tmp_path)
+    examined(1, "the stage module")
+    assert '    """Answer from the best passage."""\n    ot.constant("model", "m-1")\n' in _read(repo, "pipeline/llm.py")
+
+
+def test_a_decorator_laid_out_differently_but_equal_to_the_plan_is_left_alone(tmp_path, examined):
+    repo = make_repo(tmp_path / "repo")
+    _apply(repo, _patch(repo).patch, tmp_path)
+    llm = _read(repo, "pipeline/llm.py")
+    start, end = llm.index("@ot.stage("), llm.index("def answer")
+    one_line = ('@ot.stage("answer", instrument=ot.pkg("extractive", "onetrace", kind="answerer"), '
+                'rederivable=False, note="a stand-in for a hosted model")\n')
+    (repo / "pipeline/llm.py").write_text(llm[:start] + one_line + llm[end:], encoding="utf-8")
+    examined(1, "the patch after the decorator was reformatted")
+    assert _patch(repo).files == []
+
+
 def test_a_file_with_crlf_line_endings_keeps_them(tmp_path, examined):
     repo = make_repo(tmp_path / "repo", {"pipeline/llm.py": LLM.replace("\n", "\r\n")})
     result = _patch(repo)
@@ -342,6 +387,74 @@ ci:
 '''}, ["plan field entries", "waits"]),
 }
 
+ANSWER_TRUSTED = PLAN.replace('    rederivable: "false"\n', '    trust: operator-authored\n    rederivable: "false"\n')
+RETRIEVE_REPEATS = ANSWER_TRUSTED.replace('    rederivable: "true"\n  - name: answer',
+                                          '    rederivable: "true"\n    repeats: true\n  - name: answer')
+POOL = "    import concurrent.futures\n    with concurrent.futures.ThreadPoolExecutor() as pool:\n"
+ANSWER_BLOCK = ('  - name: answer\n    function: pipeline.llm:answer\n'
+                '    instrument: {name: extractive, package: onetrace, kind: answerer}\n'
+                '    rederivable: "false"\n    rederivable_note: "a stand-in for a hosted model"\n')
+
+#: Where a stage's calls cannot be seen from the entry function, or its argument may not be a
+#: stage's return value unchanged, or another stage runs inside it.
+REFUSED.update({
+    "a stage called in a nested function that a pool maps": ({"pipeline/main.py": MAIN.replace(
+        "    passages = retrieve()\n",
+        "    def work(_):\n        return retrieve()\n" + POOL + "        passages = list(pool.map(work, [1, 2]))[0]\n"),
+        "onetrace-plan.yaml": RETRIEVE_REPEATS}, ["'retrieve'", "nested function or lambda", "dynamic dispatch"]),
+    "a stage called in a lambda that a pool maps": ({"pipeline/main.py": MAIN.replace(
+        "    passages = retrieve()\n",
+        "    work = lambda _: retrieve()\n" + POOL + "        passages = list(pool.map(work, [1, 2]))[0]\n"),
+        "onetrace-plan.yaml": RETRIEVE_REPEATS}, ["'retrieve'", "nested function or lambda", "dynamic dispatch"]),
+    "a stage bound to another name": ({"pipeline/main.py": MAIN.replace(
+        "    return answer(passages)\n", "    work = answer\n" + POOL + "        return list(pool.map(work, [passages]))\n"),
+        "onetrace-plan.yaml": ANSWER_TRUSTED}, ["'answer'", "used as a value", "dynamic dispatch"]),
+    "a stage handed to a helper": ({"pipeline/main.py": MAIN.replace(
+        "    return answer(passages)\n", "    return twice(answer, passages)\n") + (
+        "\n\ndef twice(f, x):\n    return [f(x), f(x)]\n"),
+        "onetrace-plan.yaml": ANSWER_TRUSTED}, ["'answer'", "used as a value", "dynamic dispatch"]),
+    "a stage handed to the builtin map": ({"pipeline/main.py": MAIN.replace(
+        "    return answer(passages)\n", "    return list(map(answer, [passages]))\n"),
+        "onetrace-plan.yaml": ANSWER_TRUSTED}, ["'answer'", "used as a value"]),
+    "a stage handed to a stage": ({"pipeline/main.py": MAIN.replace(
+        "    passages = retrieve()\n    return answer(passages)\n", "    return answer(retrieve)\n")},
+        ["'retrieve'", "used as a value"]),
+    "an async stage's calls gathered from a list": (
+        {"pipeline/llm.py": LLM.replace("def answer", "async def answer"),
+         "pipeline/main.py": MAIN.replace("from pipeline.llm import answer\n", "import asyncio\n\nfrom pipeline.llm import answer\n")
+         .replace("    return answer(passages)\n",
+                  "    calls = [answer(passages), answer(passages)]\n    return asyncio.run(asyncio.gather(*calls))\n"),
+         "onetrace-plan.yaml": ANSWER_TRUSTED.replace('    rederivable: "false"\n', '    rederivable: "false"\n    repeats: true\n')},
+        ["'answer'", "is async", "not awaited"]),
+    "a stage started twice in a task group": ({"pipeline/main.py": MAIN.replace(
+        "    passages = retrieve()\n",
+        "    tg = None\n    tg.start_soon(retrieve)\n    tg.start_soon(retrieve)\n    passages = retrieve()\n")},
+        ["'retrieve'", "(start_soon)", "overlap", "waits"]),
+    "the entry reaches a stage through a helper": ({"pipeline/main.py": MAIN.replace(
+        "    passages = retrieve()\n", "    passages = fetch()\n") + "\n\ndef fetch():\n    return retrieve()\n",
+        "onetrace-plan.yaml": ANSWER_TRUSTED}, ["reaches stage 'retrieve'", "pipeline.main:fetch", "dynamic dispatch"]),
+    "a stage that calls another stage through a helper": (
+        {"pipeline/helpers.py": "from pipeline.retrieval import retrieve\n\n\ndef more():\n    return retrieve()\n",
+         "pipeline/llm.py": "from pipeline.helpers import more\n\n\n" + LLM.replace("passages[0]", "(passages or more())[0]")},
+        ["'answer'", "'retrieve'", "through pipeline.helpers:more", "nested"]),
+    "a stage's output changed in place, without trust": ({"pipeline/main.py": MAIN.replace(
+        "    passages = retrieve()\n", "    passages = retrieve()\n    passages.reverse()\n")},
+        ["stages[1].trust", "'passages'", "unchanged"]),
+    "a stage's output changed by index, without trust": ({"pipeline/main.py": MAIN.replace(
+        "    passages = retrieve()\n", "    passages = retrieve()\n    passages[0] = passages[0]\n")},
+        ["stages[1].trust", "'passages'", "unchanged"]),
+    "a stage called without a defaulted parameter, without trust": (
+        {"pipeline/llm.py": LLM.replace("def answer(passages):", 'def answer(passages, style="short"):')},
+        ["stages[1].trust", "'style'", "default"]),
+    "an @ot.stage left in a module the entry imports": (
+        {"onetrace-plan.yaml": PLAN.replace(ANSWER_BLOCK, ""),
+         "pipeline/llm.py": 'import onetrace as ot\n\n\n@ot.stage("answer", rederivable=False)\n' + LLM},
+        ["'answer'", "the plan names no stage for it"]),
+    "a constants name that is not a parameter": (
+        {"onetrace-plan.yaml": PLAN.replace('    rederivable: "false"\n', '    rederivable: "false"\n    constants: [pasages]\n')},
+        ["'pasages'", "constants"]),
+})
+
 
 #: The error code a refusal must map to, where decorator style added the code or its pattern.
 CODE = {"a corpus link": "decorator-waits", "named instances": "decorator-waits", "several entries": "decorator-waits",
@@ -353,7 +466,20 @@ CODE = {"a corpus link": "decorator-waits", "named instances": "decorator-waits"
         "a function stage named intake": "reserved-name", "the name ot taken in a stage module": "reserved-name",
         "code already instrumented in wrapper style": "instrumented-other-plan",
         "a stage name shadowed in the entry": "shadowed",
-        "a stage given a value no stage made, without trust": "missing-field"}
+        "a stage given a value no stage made, without trust": "missing-field",
+        "a stage called in a nested function that a pool maps": "dynamic-dispatch",
+        "a stage called in a lambda that a pool maps": "dynamic-dispatch",
+        "a stage bound to another name": "dynamic-dispatch", "a stage handed to a helper": "dynamic-dispatch",
+        "a stage handed to the builtin map": "dynamic-dispatch", "a stage handed to a stage": "dynamic-dispatch",
+        "an async stage's calls gathered from a list": "dynamic-dispatch",
+        "the entry reaches a stage through a helper": "dynamic-dispatch",
+        "a stage started twice in a task group": "decorator-waits",
+        "a stage that calls another stage through a helper": "nested-stage",
+        "a stage's output changed in place, without trust": "missing-field",
+        "a stage's output changed by index, without trust": "missing-field",
+        "a stage called without a defaulted parameter, without trust": "missing-field",
+        "an @ot.stage left in a module the entry imports": "already-decorated",
+        "a constants name that is not a parameter": "invalid-value"}
 
 
 @pytest.mark.parametrize("case", sorted(REFUSED))
@@ -393,7 +519,7 @@ def test_every_parameter_of_the_entry_is_listed_or_the_plan_is_refused(tmp_path,
     assert "memory-input" in [explain(p)[0] for p in caught.value.problems]
 
 
-@pytest.mark.xfail(strict=True, reason="an entry with parameters records its intake through "
+@pytest.mark.xfail(strict=True, raises=Refused, reason="an entry with parameters records its intake through "
                                        "@ot.run(trust=, rederivable=, note=), which onetrace 0.2.0's candidate "
                                        "does not carry yet; generated once it does")
 def test_an_entry_with_parameters_gets_its_intake_on_ot_run(tmp_path, examined):
@@ -412,7 +538,7 @@ def test_an_entry_with_parameters_gets_its_intake_on_ot_run(tmp_path, examined):
 def run(request, mode):''' in _read(repo, "pipeline/main.py")
 
 
-@pytest.mark.xfail(strict=True, reason="a named instance is called as stage.instance(name)(...), which "
+@pytest.mark.xfail(strict=True, raises=Refused, reason="a named instance is called as stage.instance(name)(...), which "
                                        "onetrace 0.2.0's candidate does not carry yet; generated once it does")
 def test_named_instances_are_called_through_instance(tmp_path, examined):
     main_py = MAIN.replace("    passages = retrieve()\n",

@@ -66,6 +66,8 @@ REFUSALS = {
                                        "entry", "entries"),
     "two entries sharing a run_dir": (_with("runs/ingest/{run_id}", "runs/query/{run_id}"),
                                       "entries[1].run_dir", "entries[0]"),
+    "two entries sharing a run_dir written two ways": (_with("runs/ingest/{run_id}", "runs/query/{run_id}/"),
+                                                       "entries[1].run_dir", "entries[0]"),
     "the same entry twice": (_with("entry: pipeline.ingest:run", "entry: pipeline.main:run"),
                              "entries[1].entry", "entries[0]"),
     "an index_stage of the entry carrying the link": (_with("index_stage: split", "index_stage: retrieve"),
