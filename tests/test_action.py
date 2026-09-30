@@ -94,7 +94,8 @@ def test_the_pinned_gate_reads_every_plan_the_generator_writes_a_workflow_for(tm
     sha = GATE_ACTION.rpartition("@")[2]
     archive = subprocess.run(["git", "-C", str(ROOT), "archive", sha, "src"], capture_output=True, timeout=60)
     assert archive.returncode == 0, archive.stderr
-    tarfile.open(fileobj=io.BytesIO(archive.stdout)).extractall(tmp_path)
+    safe = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
+    tarfile.open(fileobj=io.BytesIO(archive.stdout)).extractall(tmp_path, **safe)
     plans = {"one entry": PLAN, "two entries": TWO, "one command": ONE_COMMAND, "one ungated": INGEST_UNGATED,
              "two entries, decorated": TWO_ENTRIES}
     script = (
