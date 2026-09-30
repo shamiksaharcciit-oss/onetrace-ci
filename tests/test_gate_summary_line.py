@@ -59,5 +59,5 @@ def test_the_reports_do_not_carry_the_summary_line(make_run, write_plan, tmp_pat
     verdict = json.loads((out / "verdict.json").read_text(encoding="utf-8"))
     summary = (out / "summary.md").read_text(encoding="utf-8")
     examined(2, "report files")
-    assert set(verdict) == {"exit", "findings", "format", "plan"}
+    assert set(verdict) == {"exit", "findings", "format", "plan", "run", "baseline"}
     assert lines[0] not in summary
