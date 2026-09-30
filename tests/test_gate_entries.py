@@ -54,3 +54,26 @@ def test_the_gate_s_report_names_every_entry_left_ungated(make_run, write_plan, 
     examined(1, "the gate's summary")
     assert rc == 0
     assert f"Not gated (ci.baseline is null): {INGEST}" in summary
+
+
+def test_the_gate_s_report_names_the_run_by_its_folder(tmp_path, write_plan, examined):
+    """With one command for every entry, each entry's run carries the same id and is told apart
+    by its folder; so the report names the run and the baseline by their folders."""
+    import json
+    from tests.conftest import _write_run
+    plan = write_plan("plan.yaml", "approved_by: alice\n")
+    baseline = tmp_path / "baseline"
+    _write_run(baseline, "baseline")
+    reports = []
+    for kind in ("ingest", "query"):
+        run = tmp_path / "runs" / kind / "onetrace-ci-candidate"
+        _write_run(run, "onetrace-ci-candidate")
+        out = tmp_path / f"out-{kind}"
+        assert main(["--run", str(run), "--baseline", str(baseline), "--plan", str(plan), "--out", str(out)]) == 0
+        reports.append((run, (out / "summary.md").read_text(encoding="utf-8"),
+                        json.loads((out / "verdict.json").read_text(encoding="utf-8"))))
+    examined(len(reports), "gate reports of two runs with one id")
+    for run, summary, verdict in reports:
+        assert f"**run:** `{run}`, against **baseline:** `{baseline}`" in summary, summary
+        assert (verdict["run"], verdict["baseline"]) == (str(run), str(baseline))
+    assert reports[0][1] != reports[1][1]
