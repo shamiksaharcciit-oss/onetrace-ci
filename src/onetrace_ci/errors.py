@@ -54,7 +54,7 @@ CODES: list[tuple[str, str, str]] = [
                       r"is also entries\[|not an entries field|is a stage of this entry|"
                       r"is not a stage of another entry|is named twice; each instance|"
                       r"\.constants: '[^']*' cannot be resolved|one baseline path for \d+ entries|"
-                      r"must be a path, or null|is the baseline of both",
+                      r"must be a path, or null|is the baseline of both|planned differently",
      "Correct the named field: the message says which values it accepts."),
     ("class-method", r"names a class method",
      "Make the stage a module-level function (a method can call it), and name that function."),
@@ -79,7 +79,8 @@ CODES: list[tuple[str, str, str]] = [
     ("dynamic-dispatch", r"dynamic dispatch",
      "Call the stage directly by name, in the entry function's own body (`retrieve(q)`; `await "
      "retrieve(q)` for an async stage), not through a variable, table, getattr, helper, nested "
-     "function or lambda. To run it in a pool, hand it to one call (`pool.submit(retrieve, q)`)."),
+     "function or lambda. An async stage may be given to one asyncio task "
+     "(`asyncio.create_task(retrieve(q))`)."),
     ("star-import", r"star import",
      "Import the names you use explicitly (`from pkg import retrieve`)."),
     ("stage-placement", r"at the top level of|in one statement|called conditionally|inside an assert|"

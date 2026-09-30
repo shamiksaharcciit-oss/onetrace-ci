@@ -308,22 +308,36 @@ def test_a_stage_s_output_passed_straight_to_the_next_stage_is_not_a_nested_call
     assert "pipeline/llm.py" in result.files and "pipeline/retrieval.py" in result.files
 
 
+SUBMIT_ONCE = MAIN.replace(
+    "    passages = retrieve()\n",
+    "    import concurrent.futures\n    with concurrent.futures.ThreadPoolExecutor() as pool:\n"
+    "        passages = pool.submit(retrieve).result()\n")
+
+
+@pytest.mark.xfail(strict=True, raises=Refused, reason="a stage run in another thread waits for the SDK to "
+                                                       "show, by a test against onetrace 0.2.0's candidate, "
+                                                       "that the call is recorded in the run; generated once "
+                                                       "it does")
 def test_a_stage_handed_once_to_a_pool_is_decorated_when_the_plan_states_what_it_trusts(tmp_path, examined):
     """One call cannot overlap itself. Its result reaches `answer` through a future, not as
     `retrieve`'s return value, so `answer` needs its trust stated."""
-    main_py = MAIN.replace(
-        "    passages = retrieve()\n",
-        "    import concurrent.futures\n    with concurrent.futures.ThreadPoolExecutor() as pool:\n"
-        "        passages = pool.submit(retrieve).result()\n")
-    without = make_repo(tmp_path / "without", {"pipeline/main.py": main_py})
-    with pytest.raises(Refused) as caught:
-        _patch(without)
     plan = _with('    rederivable: "false"\n', '    trust: operator-authored\n    rederivable: "false"\n')
-    repo = make_repo(tmp_path / "repo", {"pipeline/main.py": main_py, "onetrace-plan.yaml": plan})
+    repo = make_repo(tmp_path / "repo", {"pipeline/main.py": SUBMIT_ONCE, "onetrace-plan.yaml": plan})
     result = _patch(repo)
-    examined(2, "the patches without and with the stage's trust")
-    assert "stages[1].trust" in str(caught.value)
+    examined(1, "the patch for a stage handed once to a pool")
     assert "pipeline/retrieval.py" in result.files
+
+
+def test_an_async_stage_run_as_one_task_is_decorated(tmp_path, examined):
+    """An asyncio task inherits the caller's context, so the SDK finds the run in it."""
+    llm = LLM.replace("def answer", "async def answer")
+    main_py = MAIN.replace("from pipeline.llm import answer\n", "import asyncio\n\nfrom pipeline.llm import answer\n")
+    main_py = main_py.replace("def run():", "async def run():").replace(
+        "    return answer(passages)\n", "    task = asyncio.create_task(answer(passages))\n    return await task\n")
+    repo = make_repo(tmp_path / "repo", {"pipeline/llm.py": llm, "pipeline/main.py": main_py})
+    result = _patch(repo)
+    examined(1, "the patch for an async stage run as one task")
+    assert "pipeline/llm.py" in result.files
 
 
 REFUSED = {
@@ -393,11 +407,24 @@ REFUSED = {
          "onetrace-plan.yaml": PLAN.replace("stages:\n", "stages:\n  - name: intake\n    memory_inputs: [request]\n"
                                            "    trust: externally-sourced\n    rederivable: \"true\"\n")},
         ["takes parameters", "rederivable=", "waits"]),
-    "several entries": ({"onetrace-plan.yaml": '''\
+}
+
+#: Two run types: an ingest, listed first so it runs first, and the query. The ingest's stage
+#: function sits in a module the query's patch also touches.
+TWO_ENTRIES = '''\
 approved_by: alice
 entries:
+  - entry: pipeline.ingest:run
+    run_dir: runs/ingest-{run_id}
+    stages:
+      - name: index
+        function: pipeline.retrieval:build
+        instrument: {name: word-index, package: onetrace-verify, kind: indexer}
+        files: [data/corpus.json]
+        trust: operator-authored
+        rederivable: "true"
   - entry: pipeline.main:run
-    run_dir: runs/{run_id}
+    run_dir: runs/query-{run_id}
     stages:
       - name: retrieve
         function: pipeline.retrieval:retrieve
@@ -410,20 +437,63 @@ entries:
         instrument: {name: extractive, package: onetrace, kind: answerer}
         rederivable: "false"
         rederivable_note: "a stand-in for a hosted model"
-  - entry: pipeline.ingest:run
-    run_dir: runs/ingest-{run_id}
-    stages:
-      - name: index
-        function: pipeline.ingest:build
-        instrument: {name: word-index, package: onetrace-verify, kind: indexer}
-        rederivable: "true"
 approved_boundaries: []
 ci:
   install: pip install --require-hashes -r requirements.lock
-  run: python -c "from pipeline.main import run; print(run())"
-  baseline: runs/baseline
-'''}, ["plan field entries", "waits"]),
-}
+  run:
+    "pipeline.ingest:run": python -c "from pipeline.ingest import run; print(run())"
+    "pipeline.main:run": python -c "from pipeline.main import run; print(run())"
+  baseline:
+    "pipeline.ingest:run": runs/ingest-baseline
+    "pipeline.main:run": runs/query-baseline
+'''
+INGEST_MODULE = 'from pipeline.retrieval import build\n\n\ndef run():\n    """Build the index."""\n    return build()\n'
+BUILD = '\n\ndef build():\n    return json.loads((ROOT / "data" / "corpus.json").read_text(encoding="utf-8"))\n'
+
+
+def _two_entries(root, plan=TWO_ENTRIES, ingest=INGEST_MODULE):
+    from tests.decorator_fixtures import RETRIEVAL
+    return make_repo(root, {"pipeline/ingest.py": ingest, "pipeline/retrieval.py": RETRIEVAL + BUILD,
+                            "onetrace-plan.yaml": plan})
+
+
+def test_each_entry_gets_its_own_ot_run_and_the_second_patch_is_empty(tmp_path, examined):
+    repo = _two_entries(tmp_path / "repo")
+    result = _patch(repo)
+    _apply(repo, result.patch, tmp_path)
+    ingest, main_py, retrieval = (_read(repo, f"pipeline/{m}.py") for m in ("ingest", "main", "retrieval"))
+    examined(3, "the modules the two entries touch")
+    assert '@ot.run(\n    stages=["index"],\n    run_dir="runs/ingest-{run_id}",\n)\ndef run():' in ingest
+    assert ('@ot.run(\n    stages=["retrieve", "answer"],\n    run_dir="runs/query-{run_id}",\n'
+            '    declared_edges=[{"from": "retrieve", "to": "answer"}],\n)\ndef run():') in main_py
+    assert '@ot.stage(\n    "index",\n' in retrieval and '@ot.stage(\n    "retrieve",\n' in retrieval
+    assert _read(repo, ".github/workflows/onetrace.yml") == workflow_text(
+        load_instrument_plan(repo / "onetrace-plan.yaml"), "onetrace-plan.yaml")
+    #: The ingest's @ot.stage sits in a module the query touches; it is another entry's, not a
+    #: stage the plan names nowhere.
+    again = _patch(repo)
+    assert again.patch == "" and again.files == []
+
+
+def test_a_function_two_entries_plan_differently_is_refused(tmp_path, examined):
+    plan = TWO_ENTRIES.replace("        function: pipeline.retrieval:build\n",
+                               "        function: pipeline.retrieval:retrieve\n")
+    repo = _two_entries(tmp_path / "repo", plan, INGEST_MODULE.replace("build", "retrieve"))
+    examined(1, "a plan whose two entries plan one function differently")
+    with pytest.raises(Refused) as caught:
+        _patch(repo)
+    message = str(caught.value)
+    assert "entries[1].stages[0]" in message and "planned differently" in message, message
+    assert explain(caught.value.problems[0])[0] == "invalid-value"
+
+
+def test_a_problem_in_the_second_entry_names_its_field(tmp_path, examined):
+    plan = TWO_ENTRIES.replace("pipeline.llm:answer", "pipeline.llm:respond")
+    repo = _two_entries(tmp_path / "repo", plan)
+    examined(1, "a plan whose second entry names a missing function")
+    with pytest.raises(Refused) as caught:
+        _patch(repo)
+    assert "plan field entries[1].stages[1].function" in str(caught.value), str(caught.value)
 
 ANSWER_TRUSTED = PLAN.replace('    rederivable: "false"\n', '    trust: operator-authored\n    rederivable: "false"\n')
 RETRIEVE_REPEATS = ANSWER_TRUSTED.replace('    rederivable: "true"\n  - name: answer',
@@ -505,6 +575,17 @@ REFUSED.update({
                                           "from pipeline.again import Again\nfrom pipeline.llm import answer\n")
          .replace("    passages = retrieve()\n", "    passages = retrieve()\n    Again().go()\n")},
         ["reaches stage 'retrieve'", "pipeline.again:Base.go", "dynamic dispatch"]),
+    "a stage handed once to a thread pool": (
+        {"pipeline/main.py": SUBMIT_ONCE, "onetrace-plan.yaml": ANSWER_TRUSTED},
+        ["'retrieve'", "(submit)", "a stage run in another thread waits for the SDK to show it is recorded"]),
+    "a stage run in a thread of its own": (
+        {"pipeline/main.py": MAIN.replace(
+            "    passages = retrieve()\n",
+            "    import threading\n    worker = threading.Thread(target=retrieve)\n    worker.start()\n"
+            "    worker.join()\n    passages = []\n"), "onetrace-plan.yaml": ANSWER_TRUSTED},
+        ["'retrieve'", "(Thread)", "a stage run in another thread waits for the SDK to show it is recorded"]),
+    "a stage handed once to a thread pool, without trust for what comes back": (
+        {"pipeline/main.py": SUBMIT_ONCE}, ["another thread", "stages[1].trust", "'answer'"]),
     "a constants name that is not a parameter": (
         {"onetrace-plan.yaml": PLAN.replace('    rederivable: "false"\n', '    rederivable: "false"\n    constants: [pasages]\n')},
         ["'pasages'", "constants"]),
@@ -533,7 +614,7 @@ REFUSED.update({
 
 
 #: The error code a refusal must map to, where decorator style added the code or its pattern.
-CODE = {"a corpus link": "decorator-waits", "named instances": "decorator-waits", "several entries": "decorator-waits",
+CODE = {"a corpus link": "decorator-waits", "named instances": "decorator-waits",
         "an entry with parameters, each one listed": "decorator-waits",
         "calls of one stage that may overlap": "decorator-waits", "a stage mapped over a pool": "decorator-waits",
         "a stage called twice without repeats": "repeats",
@@ -558,6 +639,8 @@ CODE = {"a corpus link": "decorator-waits", "named instances": "decorator-waits"
         "an async stage's calls wrapped in wait_for, then gathered": "dynamic-dispatch",
         "the entry reaches a stage through an inherited method": "dynamic-dispatch",
         "a constants name that is not a parameter": "invalid-value",
+        "a stage handed once to a thread pool": "decorator-waits",
+        "a stage run in a thread of its own": "decorator-waits",
         "the entry reaches a stage through a class": "dynamic-dispatch",
         "a stage that calls another stage through a class": "nested-stage",
         "an @ot.stage left in a module a stage reaches": "already-decorated",
@@ -618,6 +701,23 @@ def test_an_entry_with_parameters_gets_its_intake_on_ot_run(tmp_path, examined):
     note="the request as the caller sent it",
 )
 def run(request, mode):''' in _read(repo, "pipeline/main.py")
+
+
+@pytest.mark.xfail(strict=True, raises=Refused, reason="a corpus link is written as ot.corpus_from(<ingest run>, "
+                                                       "stages=[...], index_stage=...), which onetrace 0.2.0's "
+                                                       "candidate does not carry yet; generated once it does")
+def test_a_corpus_link_names_its_stages_on_ot_run(tmp_path, examined):
+    plan = PLAN + "corpus:\n  from: runs/ingest-latest\n  stages: [retrieve]\n  index_stage: split\n"
+    repo = make_repo(tmp_path / "repo", {"onetrace-plan.yaml": plan})
+    _apply(repo, _patch(repo).patch, tmp_path)
+    examined(1, "the entry module")
+    assert '''@ot.run(
+    stages=["retrieve", "answer"],
+    run_dir="runs/{run_id}",
+    declared_edges=[{"from": "retrieve", "to": "answer"}],
+    corpus=ot.corpus_from("runs/ingest-latest", stages=["retrieve"], index_stage="split"),
+)
+def run():''' in _read(repo, "pipeline/main.py")
 
 
 @pytest.mark.xfail(strict=True, raises=Refused, reason="a named instance is called as stage.instance(name)(...), which "

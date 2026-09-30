@@ -36,8 +36,8 @@ for them:
   [Instrument from a plan](#instrument-from-a-plan)).
 - **What decorator output does not generate yet.** An entry with parameters,
   calls of one stage that may overlap, a stage's named `instances`, the
-  plan's `corpus`, and a plan with several `entries` are refused, each with
-  its reason.
+  plan's `corpus`, and a stage run in another thread or process are refused,
+  each with its reason.
 - **Recording settings in wrapper style.** A stage's `config` or `constants`,
   and the plan's `corpus`, are refused by `--style wrappers`. Decorator
   output generates `config` and `constants`.
@@ -459,9 +459,14 @@ def retrieve():
   return value passed straight to the next (`answer(retrieve())`) is two
   stages and one edge. An `async def` stage is decorated like any other; each
   call of it is awaited where it is made (`await answer(...)`), or given
-  straight to `asyncio.run`, `asyncio.gather` or a pool, or to an
-  `asyncio.wait_for` that is itself awaited there. A stage may be handed to one
-  concurrent call (`pool.submit(retrieve, q)`).
+  straight to `asyncio.run`, `asyncio.gather` or one asyncio task
+  (`asyncio.create_task(answer(p))`), or to an `asyncio.wait_for` that is
+  itself awaited there. An asyncio task inherits the run from its caller.
+- **A stage run in another thread or process** (a pool's `submit` or `map`,
+  `threading.Thread`, `run_in_executor`, `asyncio.to_thread`) is refused until
+  the SDK shows it is recorded: a pool's thread does not inherit the caller's
+  context unless it is copied, so the stage may find no run and record
+  nothing.
 
 Run again on code it decorated from the same plan, it writes an empty patch.
 A decorator whose arguments differ from the plan is replaced, and the patch
@@ -473,9 +478,10 @@ value, unchanged, needs its `trust` in the plan.** The SDK records an
 argument that is not a stage's return value (a literal, an expression, a
 value changed in place after the stage returned it) as an in-memory input,
 with the stage's trust class. onetrace-ci asks for the trust class wherever it
-cannot rule that out: a value that came back through a future, a stage handed
-to a pool, and a parameter left to its default all count. A plan that leaves
-it out is refused, naming the stage and the call.
+cannot rule that out: a value that came back through a future or a task, and
+a parameter left to its default (until the SDK shows whether it records one),
+both count. A plan that leaves it out is refused, naming the stage and the
+call.
 
 **Every parameter of the entry is recorded.** The SDK records each parameter
 of the run function, so the plan lists every one in its intake stage's
@@ -510,9 +516,10 @@ In decorator style it refuses, with the file and line (or the plan field):
 - a `Recorder` already created, and code already instrumented in wrapper
   style;
 - what waits for the SDK: an entry with parameters; calls of one stage that
-  may overlap (handed to a pool or `asyncio.gather`, say, more than once),
-  and named `instances`, which each need `stage.instance(name)`; a `corpus`
-  link; several `entries`.
+  may overlap (given to `asyncio.gather` or a task group more than once,
+  say), and named `instances`, which each need `stage.instance(name)`; a
+  stage run in another thread or process; a `corpus` link, written as
+  `ot.corpus_from(<ingest run>, stages=[...], index_stage=...)`.
 
 Its limits, stated plainly:
 
@@ -527,13 +534,11 @@ Its limits, stated plainly:
   the same value, the SDK records it for the second as an in-memory input.
   With no `trust` in the plan for that stage, its run lists `trust` in
   `assertions.undeclared`, and a gate that requires declared fields fails.
-- **A stage handed to a thread pool runs in another thread.** Whether the
-  SDK records that call in the run is the SDK's to show, with its first
-  release of the decorators.
-- **The workflow names the run by `ONETRACE_RUN_ID`.** The generated
-  workflow gates the run whose id that variable sets. Decorator output relies
-  on onetrace 0.2.0's `@ot.run` taking its run id from it, which its first
-  release of the decorators has to confirm.
+- **The workflow names each run by `ONETRACE_RUN_ID`.** The generated
+  workflow gates the run whose id that variable sets (for each entry, with
+  several). onetrace 0.2.0's `@ot.run` is to take its run id from that
+  variable; until its first release of the decorators does, the gate cannot
+  find a decorated run. `init-ci`'s workflow relies on the same.
 
 ## Discover the stages first
 

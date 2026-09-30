@@ -23,7 +23,7 @@ A field still holds a `DECIDE:` question, as `onetrace-ci discover` or `init-ci`
 
 ## decorator-waits
 
-The plan or the code needs a form decorator output does not generate yet: an entry with parameters, calls of one stage that may overlap, named instances (each waits for the SDK to carry it), a corpus link (the SDK names no form yet for the stages that record it), or several entries (which run the workflow gates is not settled).
+The plan or the code needs something decorator output does not generate yet, because the SDK does not carry it yet or has yet to show it works: an entry with parameters, calls of one stage that may overlap, named instances, a corpus link (`ot.corpus_from(..., stages=[...])`), or a stage run in another thread or process.
 
 **Fix:** Leave this form out for now: onetrace-ci generates it once the SDK carries it (or once the decision the message names is made). Until then, plan one entry without parameters, call each stage from one place at a time, and name no instances or corpus link.
 
@@ -109,7 +109,7 @@ One stage is called inside another: in its arguments, or from inside its body.
 
 A stage is reached some way other than a direct call in the entry function's own body: through a variable, a table, `getattr`, a helper function, a nested function or lambda, or (for an async stage) a coroutine not awaited where it is made. Which function runs, how often, and whether its calls overlap cannot be read from the code.
 
-**Fix:** Call the stage directly by name, in the entry function's own body (`retrieve(q)`; `await retrieve(q)` for an async stage), not through a variable, table, getattr, helper, nested function or lambda. To run it in a pool, hand it to one call (`pool.submit(retrieve, q)`).
+**Fix:** Call the stage directly by name, in the entry function's own body (`retrieve(q)`; `await retrieve(q)` for an async stage), not through a variable, table, getattr, helper, nested function or lambda. An async stage may be given to one asyncio task (`asyncio.create_task(retrieve(q))`).
 
 ## star-import
 

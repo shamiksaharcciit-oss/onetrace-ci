@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import ast
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from onetrace_ci.instrument import (_MARKER_RE, Refused, _is_docstring, _is_generator,
                                     _local_names, _Module, _module_level_recorders, _params,
@@ -58,6 +58,12 @@ CONCURRENT = frozenset({"gather", "create_task", "ensure_future", "submit", "map
                         "start_soon", "start", "spawn", "run_sync"})
 #: Of those, the ones that call what they are given many times.
 _MANY = frozenset({"map", "starmap", "imap", "imap_unordered", "map_async", "starmap_async"})
+#: Of those, the ones that run what they are given in another thread or process. A pool's thread
+#: does not inherit the caller's context unless it is copied, so a stage run there may find no
+#: active run and record nothing. Asyncio tasks do inherit it.
+_THREADS = frozenset({"submit", "map", "starmap", "imap", "imap_unordered", "map_async", "starmap_async",
+                      "apply_async", "run_in_executor", "Thread", "Process", "start_new_thread",
+                      "to_thread", "run_sync"})
 #: Calls that run the coroutine they are given, once, before they return: an async stage's call
 #: may be their argument, and it overlaps nothing (`asyncio.run(answer(p))`).
 _RUNNERS = frozenset({"run", "run_until_complete"})
@@ -159,25 +165,37 @@ class _Analysis:
     #: and the functions elsewhere already checked for one.
     touched: set[str] = field(default_factory=set)
     checked: set[int] = field(default_factory=set)
+    #: How this entry's plan fields are named ("" or `entries[n].`), and every entry's planned
+    #: stage functions (by node id), against which an existing `@ot.stage` is checked.
+    prefix: str = ""
+    planned: dict[int, str] = field(default_factory=dict)
+
+
+def views(plan: InstrumentPlan) -> list[tuple[str, InstrumentPlan]]:
+    """Each entry as a plan of its own, with the prefix its fields are named by: "" for a plan
+    with one entry, `entries[n].` for each of several."""
+    entries = plan.entries or ()
+    if len(entries) <= 1:
+        return [("", plan)]
+    return [(f"entries[{n}].", replace(plan, entry=e.entry, run_dir=e.run_dir, stages=e.stages,
+                                          corpus=e.corpus, entries=(e,)))
+            for n, e in enumerate(entries)]
 
 
 def plan_waits(plan: InstrumentPlan) -> list[str]:
     """What the plan asks for that decorator output does not generate yet."""
     found = []
-    if len(plan.entries) > 1:
-        found.append("plan field entries: generating several entries waits for a decision on which run "
-                     "the generated workflow gates, and against which baseline (the plan's ci block names "
-                     "one); until then, plan one entry")
-    if plan.corpus is not None:
-        found.append("plan field corpus: a corpus link waits for the SDK to name how the stages that "
-                     "record it are given (ot.corpus_from takes the ingest run and index_stage only); "
-                     "until then, leave corpus out of the plan")
-    for stage in plan.stages:
-        if stage.instances:
-            fn = stage.function.function if stage.function else stage.name
-            found.append(f"plan field stages[{stage.index}].instances: each named instance is called as "
-                         f"`{fn}.instance(name)(...)`. {_WAITS}; until it does, leave instances out and "
-                         f"call the stage from one place at a time")
+    for prefix, view in views(plan):
+        if view.corpus is not None:
+            found.append(f"plan field {prefix}corpus: a corpus link is written as `ot.corpus_from(<ingest "
+                         f"run>, stages=[...], index_stage=...)`. {_WAITS}; until it does, leave corpus out "
+                         f"of the plan")
+        for stage in view.stages:
+            if stage.instances:
+                fn = stage.function.function if stage.function else stage.name
+                found.append(f"plan field {prefix}stages[{stage.index}].instances: each named instance is "
+                             f"called as `{fn}.instance(name)(...)`. {_WAITS}; until it does, leave instances "
+                             f"out and call the stage from one place at a time")
     return found
 
 
@@ -305,19 +323,22 @@ def _alias_bindings(cst, module: _Module, constant_fns: set[int]) -> list:
     return hits
 
 
-def analyse(src: _Source, plan: InstrumentPlan) -> _Analysis:
+def analyse(src: _Source, plan: InstrumentPlan, prefix: str = "",
+            planned: dict[int, str] | None = None) -> _Analysis:
+    """One entry's analysis. `prefix` names its plan fields; `planned` is every entry's
+    planned stage functions, by node id (this entry's alone when None)."""
     cst = src.cst
     problems: list[str] = []
 
     # The entry function.
     entry_path, looked = src.module_file(plan.entry.module)
     if entry_path is None:
-        raise Refused(f"plan field entry: {plan.entry}: no module file for {plan.entry.module!r} "
+        raise Refused(f"plan field {prefix}entry: {plan.entry}: no module file for {plan.entry.module!r} "
                       f"(looked for {', '.join(looked)})")
     entry_mod = src.load(plan.entry.module)
     eb = src.bindings(entry_mod).get(plan.entry.function)
     if eb is None or eb.kind not in ("def", "asyncdef"):
-        raise Refused(f"plan field entry: {plan.entry}: {entry_mod.rel} has no top-level function "
+        raise Refused(f"plan field {prefix}entry: {plan.entry}: {entry_mod.rel} has no top-level function "
                       f"{plan.entry.function!r}")
     entry_fn = eb.node
     if _MARKER_RE.search(entry_mod.raw.decode("utf-8", "replace")):
@@ -332,7 +353,7 @@ def analyse(src: _Source, plan: InstrumentPlan) -> _Analysis:
     for stage in plan.stages:
         if stage.function is None:
             continue
-        at = f"plan field stages[{stage.index}]"
+        at = f"plan field {prefix}stages[{stage.index}]"
         if stage.name == INTAKE:
             problems.append(f"{at}.name: {INTAKE!r} is reserved: in decorator style the SDK records the "
                             f"entry's parameters as the stage {INTAKE!r}; give this function stage "
@@ -380,7 +401,7 @@ def analyse(src: _Source, plan: InstrumentPlan) -> _Analysis:
     # Every constants name hangs off a parameter of its stage function.
     for stage in plan.stages:
         if stage.constants and stage.function is None:
-            problems.append(f"plan field stages[{stage.index}].constants: a stage without a function has "
+            problems.append(f"plan field {prefix}stages[{stage.index}].constants: a stage without a function has "
                             f"no parameters to record constants from")
         if not stage.constants or stage.name not in targets:
             continue
@@ -388,7 +409,7 @@ def analyse(src: _Source, plan: InstrumentPlan) -> _Analysis:
         params = _params(cst, t.binding.node)
         for c in stage.constants:
             if c.split(".")[0] not in params:
-                problems.append(f"{t.module.at(t.binding.node)}: plan field stages[{stage.index}].constants: "
+                problems.append(f"{t.module.at(t.binding.node)}: plan field {prefix}stages[{stage.index}].constants: "
                                 f"{c!r} cannot be resolved: it is not a parameter of "
                                 f"{stage.function.function}, or a dotted attribute of one (its parameters "
                                 f"are {params})")
@@ -397,6 +418,8 @@ def analyse(src: _Source, plan: InstrumentPlan) -> _Analysis:
 
     by_key = {t.key: name for name, t in targets.items()}
     by_node = {id(t.binding.node): name for name, t in targets.items()}
+    if planned is not None:
+        by_node = planned
 
     # No stage runs another: not in its own body, not through a function or class of the
     # repository it calls, and not by being handed one.
@@ -438,7 +461,7 @@ def analyse(src: _Source, plan: InstrumentPlan) -> _Analysis:
     for stage in plan.stages:
         for m in stage.memory_inputs:
             if m not in params:
-                problems.append(f"plan field stages[{stage.index}].memory_inputs: {m!r} is not a "
+                problems.append(f"plan field {prefix}stages[{stage.index}].memory_inputs: {m!r} is not a "
                                 f"parameter of {plan.entry.function} ({entry_mod.at(entry_fn)}); "
                                 f"its parameters are {params}")
     for p in params:
@@ -455,6 +478,7 @@ def analyse(src: _Source, plan: InstrumentPlan) -> _Analysis:
 
     a = _Analysis(plan, entry_mod, entry_fn, targets)
     a.touched, a.checked = set(involved), set(reached)
+    a.prefix, a.planned = prefix, by_node
     _find_refs(src, a, by_key, problems)
     _check_refs(src, a, problems)
     if problems:
@@ -646,8 +670,8 @@ def _find_refs(src: _Source, a: _Analysis, by_key: dict, problems: list[str]) ->
                 return True
             if call is None and id(node) not in self.handed:
                 problems.append(f"{mod.at(node)}: stage {name!r} is used as a value, not called: {unseen}. "
-                                f"Call it directly, or hand it to one concurrent call (a pool's submit, "
-                                f"to_thread)")
+                                f"Call it directly (an async stage may be given to one asyncio task: "
+                                f"`asyncio.create_task({name}(...))`)")
                 return True
             pool = next((p for p in reversed(self.pools) if p is not None), None)
             a.refs.setdefault(name, []).append(_Ref(name, node, call, self.loops[-1] if self.loops else None,
@@ -705,7 +729,7 @@ def _find_refs(src: _Source, a: _Analysis, by_key: dict, problems: list[str]) ->
             return False
 
     fn.body.visit(Refs())
-    by_node = {id(t.binding.node): name for name, t in a.targets.items()}
+    by_node = a.planned
     fresh = {key: found for key, found in reached.items() if key not in a.checked}
     a.checked.update(fresh)
     problems.extend(_reached_problems(src, fresh, a.touched, by_node))
@@ -831,7 +855,7 @@ def _check_refs(src: _Source, a: _Analysis, problems: list[str]) -> None:
         if stage.function is None or stage.name not in a.targets:
             continue
         refs = a.refs.get(stage.name, [])
-        at = f"plan field stages[{stage.index}]"
+        at = f"plan field {a.prefix}stages[{stage.index}]"
         if not refs:
             if not any(f"stage {stage.name!r}" in p for p in problems):
                 problems.append(f"stage {stage.name!r} ({stage.function}) is never called directly in "
@@ -855,6 +879,12 @@ def _check_refs(src: _Source, a: _Analysis, problems: list[str]) -> None:
                             f"stage each need their own instance, `{stage.function.function}.instance(name)"
                             f"(...)`. {_WAITS}; until it does, call the stage from one place at a time")
             continue
+        threads = sorted({r.concurrent for r in refs if r.concurrent in _THREADS})
+        if threads:
+            problems.append(f"{sites}: stage {stage.name!r} is run in another thread or process "
+                            f"({', '.join(threads)}): a stage run in another thread waits for the SDK to show "
+                            f"it is recorded; until it does, call the stage in {plan.entry.function}'s own "
+                            f"thread")
         if many and not stage.repeats:
             why = next((r.repeats for r in refs if r.repeats), None) or f"called at {len(refs)} places"
             problems.append(f"{sites}: stage {stage.name!r} may run more than once per run ({why}); a stage "
@@ -954,17 +984,25 @@ def _has_import(cst, module: _Module) -> bool:
     return False
 
 
-def transform(src: _Source, a: _Analysis, module: _Module) -> str:
-    """The module's new text: its planned functions decorated, and the import added."""
-    cst, plan = src.cst, a.plan
-    tree = module.tree
+def _wanted(analyses: list[_Analysis], module: _Module) -> dict[int, tuple[str, str, list[str] | None]]:
+    """What each planned function in `module` gets, by node id, from every entry's analysis."""
     wanted: dict[int, tuple[str, str, list[str] | None]] = {}
-    if module is a.entry_module:
-        wanted[id(a.entry_fn)] = ("run", run_decorator(plan), None)
-    for stage in plan.stages:
-        t = a.targets.get(stage.name)
-        if t is not None and t.module is module:
-            wanted[id(t.binding.node)] = ("stage", stage_decorator(stage), constant_lines(stage))
+    for a in analyses:
+        if a.entry_module is module:
+            wanted[id(a.entry_fn)] = ("run", run_decorator(a.plan), None)
+        for stage in a.plan.stages:
+            t = a.targets.get(stage.name)
+            if t is not None and t.module is module:
+                wanted[id(t.binding.node)] = ("stage", stage_decorator(stage), constant_lines(stage))
+    return wanted
+
+
+def transform(src: _Source, analyses: list[_Analysis], module: _Module) -> str:
+    """The module's new text: its planned functions decorated, for every entry, and the import
+    added."""
+    cst = src.cst
+    tree = module.tree
+    wanted = _wanted(analyses, module)
 
     class Decorate(cst.CSTTransformer):
         def leave_FunctionDef(self, original, updated):
@@ -1046,22 +1084,70 @@ def generate(src: _Source, plan: InstrumentPlan) -> tuple[list[tuple[str, str, s
     waits = plan_waits(plan)
     if waits:
         raise Refused(waits)
-    a = analyse(src, plan)
-    modules = [a.entry_module]
-    for stage in plan.stages:
-        t = a.targets.get(stage.name)
-        if t is not None and t.module not in modules:
-            modules.append(t.module)
+    entries = views(plan)
+    planned, problems, analyses = _planned(src, entries), [], []
+    for prefix, view in entries:
+        try:
+            analyses.append(analyse(src, view, prefix, planned))
+        except Refused as e:
+            problems.extend(p for p in e.problems if p not in problems)
+    if problems:
+        raise Refused(problems)
+    problems = _shared_stage_problems(analyses)
+    if problems:
+        raise Refused(problems)
+    modules: list[_Module] = []
+    for a in analyses:
+        for module in [a.entry_module, *(t.module for t in a.targets.values())]:
+            if module not in modules:
+                modules.append(module)
     changes, summary = [], []
     for module in modules:
         old = _utf8_source(module.raw, module.rel)
-        new = transform(src, a, module)
+        new = transform(src, analyses, module)
         if new != old:
             changes.append((module.rel, old, new))
         else:
             summary.append(f"{module.rel}: already decorated as the plan says")
-    summary[:0] = _describe(a, plan)
+    summary[:0] = [line for a in analyses for line in _describe(a, a.plan)]
     return changes, summary
+
+
+def _planned(src: _Source, entries: list[tuple[str, InstrumentPlan]]) -> dict[int, str]:
+    """Every entry's planned stage functions that resolve, by node id: an existing `@ot.stage`
+    on one of them is another entry's, not a stage the plan does not name."""
+    found: dict[int, str] = {}
+    for _, view in entries:
+        for stage in view.stages:
+            if stage.function is None:
+                continue
+            try:
+                t = src.resolve(stage.function.module, stage.function.function)
+            except Refused:
+                continue                     # analysis names it
+            if t is not None and t.name and t.binding.node is not None:
+                found.setdefault(id(t.binding.node), stage.name)
+    return found
+
+
+def _shared_stage_problems(analyses: list[_Analysis]) -> list[str]:
+    """A function planned as a stage of two entries gets one decorator, so both must plan it
+    alike: the same stage name and meaning fields."""
+    seen: dict[int, tuple[_Analysis, Stage, str]] = {}
+    problems = []
+    for a in analyses:
+        for stage in a.plan.stages:
+            t = a.targets.get(stage.name)
+            if t is None:
+                continue
+            text = stage_decorator(stage) + "\n" + "\n".join(constant_lines(stage))
+            first = seen.setdefault(id(t.binding.node), (a, stage, text))
+            if first[2] != text:
+                problems.append(f"plan field {a.prefix}stages[{stage.index}]: {stage.function} is also stage "
+                                f"{first[1].name!r} of plan field {first[0].prefix}stages[{first[1].index}], "
+                                f"planned differently; one function carries one @ot.stage, so plan it alike in "
+                                f"both entries")
+    return problems
 
 
 def _describe(a: _Analysis, plan: InstrumentPlan) -> list[str]:
