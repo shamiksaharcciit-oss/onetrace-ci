@@ -472,6 +472,22 @@ def test_an_entry_that_calls_another_entry_s_stage_is_refused(tmp_path, examined
     assert "other-entry-stage" in [explain(p)[0] for p in caught.value.problems]
 
 
+def test_an_entry_that_reaches_another_entry_s_stage_through_a_helper_gets_that_fix(tmp_path, examined):
+    """Calling it in the entry's own body is refused too, so the fix is the other entry's: plan
+    it here as well, alike, or leave it to its own entry."""
+    main_py = MAIN.replace("from pipeline.llm import answer\n",
+                           "from pipeline.llm import answer\nfrom pipeline.util import prep\n").replace(
+        "    passages = retrieve()\n", "    prep()\n    passages = retrieve()\n")
+    util = "from pipeline.retrieval import build\n\n\ndef prep():\n    return build()\n"
+    repo = _two_entries(tmp_path / "repo", **{"pipeline/main.py": main_py, "pipeline/util.py": util})
+    examined(1, "a query that reaches the ingest's stage through a helper")
+    with pytest.raises(Refused) as caught:
+        _patch(repo)
+    message = str(caught.value)
+    assert "'index'" in message and "pipeline.util:prep" in message, message
+    assert [explain(p)[0] for p in caught.value.problems] == ["other-entry-stage"], caught.value.problems
+
+
 def test_a_stage_that_calls_another_entry_s_stage_is_refused(tmp_path, examined):
     llm = "from pipeline.retrieval import build\n\n\n" + LLM.replace("passages[0]", "(passages or build())[0]")
     repo = _two_entries(tmp_path / "repo", **{"pipeline/llm.py": llm})

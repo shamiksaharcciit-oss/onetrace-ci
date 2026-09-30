@@ -509,6 +509,9 @@ In decorator style it refuses, with the file and line (or the plan field):
   class, a nested function or lambda, or (async) a call not awaited where it
   is made;
 - a stage that may run more than once without `repeats: true`;
+- another entry's stage, called by this entry, by one of its stages, or
+  through its helpers: this entry's `@ot.run` does not declare it (plan it
+  in this entry too, alike, or leave it to its own entry);
 - an `@ot.stage` with another name, or on a function the plan names no stage
   for: anywhere in a module the patch touches, and on any other function the
   entry or a stage reaches;

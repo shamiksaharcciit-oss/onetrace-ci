@@ -703,6 +703,13 @@ def _find_refs(src: _Source, a: _Analysis, by_key: dict, problems: list[str]) ->
                 step = f"{owner.name}:{label} ({owner.at(body)})"
                 for use, module, stage, is_call, via in _stage_uses(src, owner, body, by_key, (step,),
                                                                     reached=reached, foreign=a.foreign):
+                    if stage in a.foreign.values() and stage not in by_key.values():
+                        problems.append(f"{mod.at(node)}: {entry} reaches stage {stage!r}, which is a stage of "
+                                        f"another entry, through " + ", then ".join(via) + f", at "
+                                        f"{module.at(use)}: {entry}'s @ot.run does not declare it, so the "
+                                        f"SDK refuses it at the call; plan it in this entry too, alike, or "
+                                        f"leave it to its own entry")
+                        return
                     problems.append(f"{mod.at(node)}: {entry} reaches stage {stage!r} through "
                                     + ", then ".join(via) + f", at {module.at(use)}: {unseen}. Call the stage "
                                     f"in {entry}'s own body")
