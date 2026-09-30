@@ -286,7 +286,8 @@ def run_gate(*, run: Path, baseline: Path, plan_path: Path, runner: Path | None,
     verdict_path.write_text(json.dumps({
         "format": "onetrace-ci-verdict/0.1",
         "exit": exit_code,
-        "plan": {"ignored_keys": list(plan.ignored_keys), "approved_by": plan.approved_by},
+        "plan": {"ignored_keys": list(plan.ignored_keys), "approved_by": plan.approved_by,
+                 **({"ungated": list(plan.ungated)} if plan.ungated else {})},
         "findings": [f.to_json() for f in findings],
     }, indent=1, sort_keys=True), encoding="utf-8")
 
@@ -295,6 +296,10 @@ def run_gate(*, run: Path, baseline: Path, plan_path: Path, runner: Path | None,
                      ""]
     if plan.ignored_keys:
         summary_lines.append(f"Ignored plan key(s), not part of this schema: {list(plan.ignored_keys)}")
+        summary_lines.append("")
+    for entry in plan.ungated:
+        summary_lines.append(f"Not gated (ci.baseline is null): {entry}")
+    if plan.ungated:
         summary_lines.append("")
     summary_lines.append("| check | verdict | detail |")
     summary_lines.append("|---|---|---|")

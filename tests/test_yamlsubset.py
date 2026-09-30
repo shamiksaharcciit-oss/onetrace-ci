@@ -55,6 +55,15 @@ ACCEPTED = {
     "a UTF-8 byte order mark": "﻿approved_by: alice\n",
     "a quoted value holding a comma in a flow mapping": "i: {k: \"x, y\", m: z, n: 'p, q'}\n",
     "a key with a space": "reviewed on: monday\n",
+    #: A mapping keyed by entry (`pipeline.main:run`) needs a key holding a colon: quoted, it is
+    #: a string to every reader.
+    "a double-quoted key holding a colon": (
+        "ci:\n  baseline:\n    \"pipeline.main:run\": runs/baseline\n    \"pipeline.ingest:run\": null\n"),
+    "a single-quoted key": "'pipeline.main:run': python -m pipeline.demo\n",
+    "a quoted key with a comment after its value": "\"a:b\": c   # a note\n",
+    "a quoted key whose value is a block list": "\"pipeline.main:run\":\n  - x\n  - y\n",
+    "a quoted key as a list item's first key": "items:\n  - \"a:b\": c\n    d: e\n  - 'x:y': z\n",
+    "a quoted scalar as a list item stays a scalar": "items:\n  - \"a: b\"\n  - 'c'\n",
 }
 
 
@@ -125,6 +134,11 @@ REFUSED = {
     "list item under a scalar": ("a: x\n  - y\n", 2),
     "mapping continuation at the wrong indent": ("stages:\n  - name: a\n   trust: x\n", 3),
     "a dash with no space": ("a:\n  -x\n", 2),
+    "a quoted key in a flow mapping": ("a: {\"k:1\": x}\n", 1),
+    "text after a quoted key": ("\"a\" b: c\n", 1),
+    "a quoted key with no space after its colon": ("x: y\n\"a\":b\n", 2),
+    "an empty quoted key": ("\"\": x\n", 1),
+    "a duplicate quoted key": ("\"a:b\": x\n'a:b': y\n", 2),
 }
 
 

@@ -120,8 +120,8 @@ command, exit code and report path) and `D/summary.md`.
 
 Read with a deliberately restricted YAML-subset reader (see
 `src/onetrace_ci/yamlsubset.py` for exactly what it supports and refuses):
-block mappings and lists, one-line flow lists and mappings of plain or
-quoted scalars, and comments. What it accepts it reads exactly as a real
+block mappings (with simple or quoted keys) and lists, one-line flow lists
+and mappings of plain or quoted scalars, and comments. What it accepts it reads exactly as a real
 YAML parser does, except that it never produces a number. A construct
 outside that subset (a block scalar, an anchor or alias, a tag, a nested
 flow collection, a duplicate key) is refused outright, naming the line,
@@ -137,8 +137,10 @@ reproduce: false
 approved_by: alice
 ```
 
-The keys `onetrace-ci instrument` reads (`entry`, `run_dir`, `stages`, `ci`)
-belong to the same file; the gate does not use them. Any other top-level key
+The keys `onetrace-ci instrument` reads (`entry`, `run_dir`, `stages` or
+`entries`, `ci`) belong to the same file; the gate does not use them, except
+to name, in its report, every entry that a `ci.baseline` mapping leaves
+ungated (`null`). Any other top-level key
 is ignored for gating purposes, but named in the summary. A missing or empty
 `approved_by` is a **fail**: a gate against an unapproved plan proves
 nothing.
