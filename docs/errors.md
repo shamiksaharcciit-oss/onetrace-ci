@@ -93,6 +93,12 @@ A stage is a lambda, a generator, a class or an assigned value (or, in wrapper s
 
 **Fix:** Make each stage a named `def` that returns one value (not a lambda, generator or class; `async def` in decorator style only), distinct from the entry function and from the other stages; and make the entry function one that returns, not a generator.
 
+## other-entry-stage
+
+An entry, or one of its stages, calls a function the plan makes a stage of another entry. The generated `@ot.stage` would make it a stage in this run too, which this entry's `@ot.run` does not declare, so the SDK would refuse it at the call.
+
+**Fix:** Plan the function as a stage of this entry too, planned alike (the same name and meaning fields), or don't call it from this entry: an `@ot.run` refuses a stage it does not declare.
+
 ## already-decorated
 
 A function already carries an `@ot.stage` that the plan does not match: a different stage name, a name that is not a literal, a function the plan names no stage for, or two stage decorators on one function.

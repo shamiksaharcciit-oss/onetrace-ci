@@ -451,10 +451,35 @@ INGEST_MODULE = 'from pipeline.retrieval import build\n\n\ndef run():\n    """Bu
 BUILD = '\n\ndef build():\n    return json.loads((ROOT / "data" / "corpus.json").read_text(encoding="utf-8"))\n'
 
 
-def _two_entries(root, plan=TWO_ENTRIES, ingest=INGEST_MODULE):
+def _two_entries(root, plan=TWO_ENTRIES, ingest=INGEST_MODULE, **others):
     from tests.decorator_fixtures import RETRIEVAL
     return make_repo(root, {"pipeline/ingest.py": ingest, "pipeline/retrieval.py": RETRIEVAL + BUILD,
-                            "onetrace-plan.yaml": plan})
+                            "onetrace-plan.yaml": plan, **others})
+
+
+def test_an_entry_that_calls_another_entry_s_stage_is_refused(tmp_path, examined):
+    """`build` is the ingest's stage `index`; the query's @ot.run does not declare it, so the SDK
+    would refuse it at the call."""
+    main_py = MAIN.replace("from pipeline.llm import answer\n",
+                           "from pipeline.llm import answer\nfrom pipeline.retrieval import build\n").replace(
+        "    passages = retrieve()\n", "    build()\n    passages = retrieve()\n")
+    repo = _two_entries(tmp_path / "repo", **{"pipeline/main.py": main_py})
+    examined(1, "a query that calls the ingest's stage")
+    with pytest.raises(Refused) as caught:
+        _patch(repo)
+    message = str(caught.value)
+    assert "'index'" in message and "a stage of another entry" in message, message
+    assert "other-entry-stage" in [explain(p)[0] for p in caught.value.problems]
+
+
+def test_a_stage_that_calls_another_entry_s_stage_is_refused(tmp_path, examined):
+    llm = "from pipeline.retrieval import build\n\n\n" + LLM.replace("passages[0]", "(passages or build())[0]")
+    repo = _two_entries(tmp_path / "repo", **{"pipeline/llm.py": llm})
+    examined(1, "a query stage that calls the ingest's stage")
+    with pytest.raises(Refused) as caught:
+        _patch(repo)
+    message = str(caught.value)
+    assert "'answer'" in message and "'index'" in message and "nested" in message, message
 
 
 def test_each_entry_gets_its_own_ot_run_and_the_second_patch_is_empty(tmp_path, examined):
@@ -584,6 +609,17 @@ REFUSED.update({
             "    import threading\n    worker = threading.Thread(target=retrieve)\n    worker.start()\n"
             "    worker.join()\n    passages = []\n"), "onetrace-plan.yaml": ANSWER_TRUSTED},
         ["'retrieve'", "(Thread)", "a stage run in another thread waits for the SDK to show it is recorded"]),
+    "a stage spawned as a greenlet": (
+        {"pipeline/main.py": MAIN.replace(
+            "    passages = retrieve()\n", "    worker = gevent.spawn(retrieve)\n    worker.join()\n    passages = []\n"),
+         "onetrace-plan.yaml": ANSWER_TRUSTED},
+        ["'retrieve'", "(spawn)", "a stage run in another thread waits for the SDK to show it is recorded"]),
+    "an async stage run on another loop's thread": (
+        {"pipeline/llm.py": LLM.replace("def answer", "async def answer"),
+         "pipeline/main.py": MAIN.replace("from pipeline.llm import answer\n", "import asyncio\n\nfrom pipeline.llm import answer\n")
+         .replace("    return answer(passages)\n",
+                  "    return asyncio.run_coroutine_threadsafe(answer(passages), LOOP).result()\n")},
+        ["'answer'", "(run_coroutine_threadsafe)", "a stage run in another thread waits for the SDK to show it is recorded"]),
     "a stage handed once to a thread pool, without trust for what comes back": (
         {"pipeline/main.py": SUBMIT_ONCE}, ["another thread", "stages[1].trust", "'answer'"]),
     "a constants name that is not a parameter": (
@@ -641,6 +677,8 @@ CODE = {"a corpus link": "decorator-waits", "named instances": "decorator-waits"
         "a constants name that is not a parameter": "invalid-value",
         "a stage handed once to a thread pool": "decorator-waits",
         "a stage run in a thread of its own": "decorator-waits",
+        "a stage spawned as a greenlet": "decorator-waits",
+        "an async stage run on another loop's thread": "decorator-waits",
         "the entry reaches a stage through a class": "dynamic-dispatch",
         "a stage that calls another stage through a class": "nested-stage",
         "an @ot.stage left in a module a stage reaches": "already-decorated",

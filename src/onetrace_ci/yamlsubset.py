@@ -222,6 +222,18 @@ def _quoted_key(text: str, source: str, no: int) -> tuple[str, str]:
     return key, after[1:].strip()
 
 
+def _is_quoted_key(text: str, source: str, no: int) -> bool:
+    """True if a list item's text starts with a quoted key (`- "a:b": c`), not a quoted scalar
+    (`- "a: b"`): the item is then a mapping, as it is with a simple key."""
+    if text[:1] not in ("'", '"'):
+        return False
+    try:
+        _quoted_key(text, source, no)
+    except SubsetError:
+        return False
+    return True
+
+
 def _plain(text: str, source: str, no: int, *, flow: bool):
     first = text[0]
     if first in _REFUSED_LEADING:
@@ -415,7 +427,7 @@ class _Reader:
                 else:
                     result.append(self.block(nxt.indent))
                 continue
-            if _KEY_RE.match(rest):
+            if _KEY_RE.match(rest) or _is_quoted_key(rest, self.source, line.no):
                 column = line.indent + (len(line.text) - len(rest))
                 result.append(self.mapping(column, first=rest, first_no=line.no))
                 continue

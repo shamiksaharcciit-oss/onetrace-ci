@@ -560,6 +560,10 @@ def _per_entry(raw_ci: dict, key: str, names: list[str] | None, problems: _Probl
             problems.add(at, f"missing; entry {name!r} has no {key}: map every entry, to "
                              + ("its baseline path, or to null to leave it ungated" if baseline else "its command"))
             ok = False
+    if baseline and ok and names is not None and pairs and all(item is None for _, item in pairs):
+        problems.add(at, "every entry's baseline is null: the workflow would gate nothing, and no gate's "
+                         "report would name the entries left ungated; give at least one entry its baseline")
+        ok = False
     #: As paths: `runs/b` and `runs/b/` are one folder, and one entry's baseline is never
     #: another's.
     owners: dict[PurePosixPath, str] = {}

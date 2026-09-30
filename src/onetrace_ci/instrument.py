@@ -53,7 +53,7 @@ import json
 import re
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from onetrace_ci.errors import format_refusal
 from onetrace_ci.instrument_plan import (FunctionRef, InstrumentPlan, PlanError, PlanRefused, SignSpec,
@@ -1177,6 +1177,8 @@ def render_entries_workflow(plan: InstrumentPlan, plan_rel: str,
             continue
         slug = _slug_file(str(e.entry))
         steps.append(f"      - name: onetrace-ci gate, {e.entry}\n"
+                     #: Every gate runs and reports, even after an earlier one failed.
+                     "        if: ${{ !cancelled() }}\n"
                      f"        uses: {GATE_ACTION}\n"
                      "        with:\n"
                      f"          run: {_q(e.run_dir.replace('{run_id}', entry_run_id(plan, e.entry)))}\n"
@@ -1336,6 +1338,7 @@ def build_patch(*, plan_path: Path, repo: Path, style: str = "decorators") -> Re
             whose = "" if len(plan.entries) == 1 else f" of {e.entry}"
             problems.append(f"plan fields run_dir and ci.baseline: the workflow's run{whose} would be written "
                             f"to {candidate!r}, which is the committed baseline")
+    problems.extend(_nested_folders(plan))
     if problems:
         raise Refused(problems)
 
@@ -1386,6 +1389,28 @@ def build_patch(*, plan_path: Path, repo: Path, style: str = "decorators") -> Re
         header.append("stages that record no settings (no config or constants in the plan): "
                       + ", ".join(repr(n) for n in bare))
     return Result("".join(diffs), files, header + summary)
+
+
+def _nested_folders(plan: InstrumentPlan) -> list[str]:
+    """A workflow run written inside another entry's run, or inside a baseline (or a baseline
+    inside a run): each run has a folder of its own, apart from every baseline. With one command
+    for every entry, all their runs share the base id, so nested `run_dir`s would nest them."""
+    places = []
+    for e in plan.entries:
+        whose = "" if len(plan.entries) == 1 else f" of {e.entry}"
+        run = PurePosixPath(e.run_dir.replace("{run_id}", entry_run_id(plan, e.entry)))
+        places.append((f"the workflow's run{whose}", run, True))
+        baseline = plan.ci.baseline_of(str(e.entry))
+        if baseline is not None:
+            places.append((f"the committed baseline{whose}", PurePosixPath(baseline), False))
+    problems = []
+    for what, path, is_run in places:
+        for other_what, other, other_is_run in places:
+            if (is_run or other_is_run) and other in path.parents:
+                problems.append(f"plan fields run_dir and ci.baseline: {what} would be written inside "
+                                f"{other_what}, {str(other)!r}; each run has a folder of its own, apart from "
+                                f"every baseline")
+    return problems
 
 
 def _wrapper_files(src: _Source, plan: InstrumentPlan, plan_rel: str, repo: Path) -> tuple[list, list, list]:

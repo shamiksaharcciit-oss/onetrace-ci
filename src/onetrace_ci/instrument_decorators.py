@@ -63,7 +63,7 @@ _MANY = frozenset({"map", "starmap", "imap", "imap_unordered", "map_async", "sta
 #: active run and record nothing. Asyncio tasks do inherit it.
 _THREADS = frozenset({"submit", "map", "starmap", "imap", "imap_unordered", "map_async", "starmap_async",
                       "apply_async", "run_in_executor", "Thread", "Process", "start_new_thread",
-                      "to_thread", "run_sync"})
+                      "to_thread", "run_sync", "spawn", "run_coroutine_threadsafe"})
 #: Calls that run the coroutine they are given, once, before they return: an async stage's call
 #: may be their argument, and it overlaps nothing (`asyncio.run(answer(p))`).
 _RUNNERS = frozenset({"run", "run_until_complete"})
@@ -169,6 +169,8 @@ class _Analysis:
     #: stage functions (by node id), against which an existing `@ot.stage` is checked.
     prefix: str = ""
     planned: dict[int, str] = field(default_factory=dict)
+    #: Other entries' planned stage functions (by node id) that are not this entry's stages.
+    foreign: dict[int, str] = field(default_factory=dict)
 
 
 def views(plan: InstrumentPlan) -> list[tuple[str, InstrumentPlan]]:
@@ -420,13 +422,15 @@ def analyse(src: _Source, plan: InstrumentPlan, prefix: str = "",
     by_node = {id(t.binding.node): name for name, t in targets.items()}
     if planned is not None:
         by_node = planned
+    own = {id(t.binding.node) for t in targets.values()}
+    foreign = {node: name for node, name in by_node.items() if node not in own}
 
     # No stage runs another: not in its own body, not through a function or class of the
     # repository it calls, and not by being handed one.
     reached: dict[int, tuple[_Module, object]] = {}
     for name, t in targets.items():
         for node, module, other, is_call, via in _stage_uses(src, t.module, t.binding.node, by_key,
-                                                             reached=reached):
+                                                             reached=reached, foreign=foreign):
             where = "inside its own body" if not via else "through " + ", then ".join(via)
             problems.append(f"{module.at(node)}: stage {name!r} {'calls' if is_call else 'uses'} stage "
                             f"{other!r} {where}; nested stage calls are refused, because the inner stage "
@@ -478,7 +482,7 @@ def analyse(src: _Source, plan: InstrumentPlan, prefix: str = "",
 
     a = _Analysis(plan, entry_mod, entry_fn, targets)
     a.touched, a.checked = set(involved), set(reached)
-    a.prefix, a.planned = prefix, by_node
+    a.prefix, a.planned, a.foreign = prefix, by_node, foreign
     _find_refs(src, a, by_key, problems)
     _check_refs(src, a, problems)
     if problems:
@@ -546,7 +550,7 @@ def _bodies(src: _Source, t: _Target, seen: set | None = None) -> list[tuple[_Mo
 
 
 def _stage_uses(src: _Source, module: _Module, fn, by_key: dict, via: tuple = (), seen: set | None = None,
-                reached: dict | None = None):
+                reached: dict | None = None, foreign: dict | None = None):
     """Each use of a stage in `fn`'s body, and in the bodies of the repository's functions and
     classes it uses, transitively: (node, its module, the stage, whether it is a call, the
     functions on the way there). The functions it goes into are added to `reached`, by id, as
@@ -592,11 +596,15 @@ def _stage_uses(src: _Source, module: _Module, fn, by_key: dict, via: tuple = ()
         if callee.key in by_key:
             yield node, module, by_key[callee.key], is_call, via
             continue
+        if foreign and id(callee.binding.node) in foreign:
+            #: Another entry's stage: decorated, so it would run as a stage inside this one.
+            yield node, module, foreign[id(callee.binding.node)], is_call, via
+            continue
         for owner, body, label in _bodies(src, callee):
             if reached is not None:
                 reached.setdefault(id(body), (owner, body))
             step = f"{owner.name}:{label} ({owner.at(body)})"
-            yield from _stage_uses(src, owner, body, by_key, (*via, step), seen, reached)
+            yield from _stage_uses(src, owner, body, by_key, (*via, step), seen, reached, foreign)
 
 
 def _find_refs(src: _Source, a: _Analysis, by_key: dict, problems: list[str]) -> None:
@@ -654,6 +662,12 @@ def _find_refs(src: _Source, a: _Analysis, by_key: dict, problems: list[str]) ->
                 return False
             if src.head(node) in shadowing and (t.key not in by_key or call is None):
                 return t.key in by_key      # the local of that name, not the module's function
+            if t.key not in by_key and id(t.binding.node) in a.foreign:
+                problems.append(f"{mod.at(node)}: {entry} {'calls' if call else 'uses'} stage "
+                                f"{a.foreign[id(t.binding.node)]!r}, which is a stage of another entry: "
+                                f"{entry}'s @ot.run does not declare it, so the SDK refuses it at the call; "
+                                f"plan it in this entry too, alike, or leave it to its own entry")
+                return True
             if t.key not in by_key:
                 self._helper(node, t)
                 return False
@@ -688,7 +702,7 @@ def _find_refs(src: _Source, a: _Analysis, by_key: dict, problems: list[str]) ->
                 reached.setdefault(id(body), (owner, body))
                 step = f"{owner.name}:{label} ({owner.at(body)})"
                 for use, module, stage, is_call, via in _stage_uses(src, owner, body, by_key, (step,),
-                                                                    reached=reached):
+                                                                    reached=reached, foreign=a.foreign):
                     problems.append(f"{mod.at(node)}: {entry} reaches stage {stage!r} through "
                                     + ", then ".join(via) + f", at {module.at(use)}: {unseen}. Call the stage "
                                     f"in {entry}'s own body")

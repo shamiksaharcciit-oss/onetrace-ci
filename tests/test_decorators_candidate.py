@@ -92,6 +92,39 @@ def test_a_stage_run_in_a_thread_pool_is_recorded_in_the_run(tmp_path, examined)
 
 
 @pytest.mark.xfail(strict=True, raises=CandidateMissing,
+                   reason="the workflow names each entry's run by ONETRACE_RUN_ID, which onetrace 0.2.0's "
+                          "@ot.run is to honour; until its candidate does, no gate finds its entry's run")
+@pytest.mark.parametrize("one_command", [False, True], ids=["a command per entry", "one command"])
+def test_each_entry_s_run_is_where_its_gate_looks(tmp_path, one_command, examined):
+    """With several entries, the workflow runs each entry's command (or one command for all)
+    with its run id, then gates each entry's run where its own step looks for it."""
+    import yaml
+    from tests.test_instrument_decorators import TWO_ENTRIES, _two_entries
+    _candidate()
+    plan = TWO_ENTRIES
+    if one_command:
+        start = plan.index("  run:\n")
+        plan = plan[:start] + ("  run: python -c \"from pipeline.ingest import run as i; from pipeline.main import run as q; "
+                               "i(); print(q())\"\n") + plan[plan.index("  baseline:\n"):]
+    repo = _two_entries(tmp_path / "repo", plan)
+    patch = tmp_path / "p.patch"
+    patch.write_bytes(build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo).patch.encode("utf-8"))
+    subprocess.run(["git", "-C", str(repo), "apply", str(patch)], check=True, capture_output=True, timeout=60)
+    steps = yaml.safe_load((repo / ".github" / "workflows" / "onetrace.yml").read_text(encoding="utf-8"))
+    steps = steps["jobs"]["onetrace"]["steps"]
+    for step in steps:
+        if str(step.get("name", "")).startswith("Run "):
+            ran = subprocess.run(step["run"], shell=True, cwd=repo, capture_output=True, text=True, timeout=120,
+                                 env=dict(os.environ, **step["env"]))
+            assert ran.returncode == 0, ran.stderr
+    gated = [s["with"]["run"] for s in steps if "uses" in s and "onetrace-ci@" in s["uses"]]
+    examined(len(gated), "the runs the workflow's gate steps look for")
+    assert len(gated) == 2
+    for run in gated:
+        assert (repo / run / "MANIFEST.json").is_file(), run
+
+
+@pytest.mark.xfail(strict=True, raises=CandidateMissing,
                    reason="the workflow names each run by ONETRACE_RUN_ID, which onetrace 0.2.0's @ot.run is "
                           "to honour; until its candidate does, the gate cannot find a decorated run")
 def test_the_workflow_s_run_is_where_its_gate_looks(tmp_path, examined):

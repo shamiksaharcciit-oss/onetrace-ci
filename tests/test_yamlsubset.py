@@ -62,6 +62,8 @@ ACCEPTED = {
     "a single-quoted key": "'pipeline.main:run': python -m pipeline.demo\n",
     "a quoted key with a comment after its value": "\"a:b\": c   # a note\n",
     "a quoted key whose value is a block list": "\"pipeline.main:run\":\n  - x\n  - y\n",
+    "a quoted key as a list item's first key": "items:\n  - \"a:b\": c\n    d: e\n  - 'x:y': z\n",
+    "a quoted scalar as a list item stays a scalar": "items:\n  - \"a: b\"\n  - 'c'\n",
 }
 
 

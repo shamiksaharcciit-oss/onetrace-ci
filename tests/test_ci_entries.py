@@ -12,7 +12,7 @@ import pytest
 
 from onetrace_ci.errors import explain
 from onetrace_ci.gate import main as gate_main
-from onetrace_ci.instrument import CANDIDATE_RUN_ID, workflow_text
+from onetrace_ci.instrument import CANDIDATE_RUN_ID, Refused, build_patch, workflow_text
 from onetrace_ci.instrument_plan import PlanRefused, parse_instrument_plan
 from onetrace_ci.plan import parse_plan_text
 
@@ -109,6 +109,9 @@ REFUSALS = {
         _with('    "pipeline.main:run": python -m pipeline.demo\n',
               '    "pipeline.main:run": python -m pipeline.demo\n    "pipeline.other:run": python -m other\n'),
         ["ci.run", "'pipeline.other:run'", "is not one of"]),
+    "every entry left ungated": (
+        INGEST_UNGATED.replace('    "pipeline.main:run": runs/query-baseline\n', '    "pipeline.main:run": null\n'),
+        ["ci.baseline", "would gate nothing"]),
     "two entries mapped to one baseline": (
         _with("runs/query-baseline", "runs/ingest-baseline/"), ["ci.baseline", "'runs/ingest-baseline", "both"]),
     "a baseline that is not a path in the repository": (
@@ -164,6 +167,33 @@ def test_two_entries_are_run_in_the_plan_s_order_and_each_gated_against_its_own_
     #: Each gate writes its own report, uploaded under its own name.
     assert 'out: "onetrace-ci-out-pipeline-ingest-run"' in steps[gate_ingest][1]
     assert 'report-name: "onetrace-ci-gate-report-pipeline-main-run"' in steps[gate_query][1]
+    #: Each gate runs, and reports, even when an earlier one failed; the job fails if any fails.
+    assert all("if: ${{ !cancelled() }}" in steps[i][1] for i in (gate_ingest, gate_query))
+
+
+def _instrument_refused(tmp_path, plan):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "onetrace-plan.yaml").write_text(plan, encoding="utf-8")
+    with pytest.raises(Refused) as caught:
+        build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo)
+    return "\n".join(caught.value.problems)
+
+
+def test_one_entry_s_run_folder_is_never_inside_another_s(tmp_path, examined):
+    """With one command both entries get the base id, so nested run_dirs would nest their runs."""
+    plan = ONE_COMMAND.replace("runs/ingest/{run_id}", "runs/{run_id}/ingest").replace("runs/query/{run_id}", "runs/{run_id}")
+    message = _instrument_refused(tmp_path, plan)
+    examined(1, "a plan whose runs would nest")
+    assert "would be written inside" in message and "pipeline.ingest:run" in message, message
+
+
+def test_a_run_folder_is_never_inside_a_baseline(tmp_path, examined):
+    plan = TWO.replace("runs/query/{run_id}", "runs/query-baseline/{run_id}")
+    message = _instrument_refused(tmp_path, plan)
+    examined(1, "a plan whose run would land inside a baseline")
+    assert "would be written inside" in message and "runs/query-baseline" in message, message
+    assert all(explain(p) for p in message.splitlines())
 
 
 def test_the_run_order_is_the_plan_s_order(examined):

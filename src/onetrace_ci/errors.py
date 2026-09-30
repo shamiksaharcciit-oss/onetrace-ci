@@ -35,7 +35,8 @@ CODES: list[tuple[str, str, str]] = [
     ("plan-path", r"backslash|is absolute|leaves the repository|is a pattern; name each file|"
                   r"must be a path inside --repo|the plan is outside --repo",
      "Write a relative path inside the repository, with forward slashes and no `..` or wildcards."),
-    ("run-dir", r"\{run_id\}|would be written onto the baseline|would be written to .* which is the committed baseline",
+    ("run-dir", r"\{run_id\}|would be written onto the baseline|would be written to .* which is the committed baseline|"
+                r"would be written inside",
      "Give `run_dir` a `{run_id}` placeholder (for example `runs/{run_id}`) and keep the baseline "
      "somewhere else."),
     ("files-missing", r"does not exist under|no such plan file",
@@ -54,7 +55,8 @@ CODES: list[tuple[str, str, str]] = [
                       r"is also entries\[|not an entries field|is a stage of this entry|"
                       r"is not a stage of another entry|is named twice; each instance|"
                       r"\.constants: '[^']*' cannot be resolved|one baseline path for \d+ entries|"
-                      r"must be a path, or null|is the baseline of both|planned differently",
+                      r"must be a path, or null|is the baseline of both|planned differently|"
+                      r"would gate nothing",
      "Correct the named field: the message says which values it accepts."),
     ("class-method", r"names a class method",
      "Make the stage a module-level function (a method can call it), and name that function."),
@@ -69,6 +71,9 @@ CODES: list[tuple[str, str, str]] = [
      "Make each stage a named `def` that returns one value (not a lambda, generator or class; "
      "`async def` in decorator style only), distinct from the entry function and from the other "
      "stages; and make the entry function one that returns, not a generator."),
+    ("other-entry-stage", r"which is a stage of another entry",
+     "Plan the function as a stage of this entry too, planned alike (the same name and meaning "
+     "fields), or don't call it from this entry: an `@ot.run` refuses a stage it does not declare."),
     ("already-decorated", r"is already decorated as",
      "Make the existing `@ot.stage` agree with the plan: the same stage name, on the function the "
      "plan names (or remove it). onetrace-ci replaces a matching decorator's arguments; it never "

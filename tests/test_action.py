@@ -77,3 +77,46 @@ def test_the_pinned_gate_takes_every_input_the_generated_workflows_pass(examined
                 passed |= set(step.get("with", {}))
     examined(len(passed), "inputs the generated workflows pass to the gate")
     assert passed <= declared, f"the pinned gate {sha[:12]} does not declare {sorted(passed - declared)}"
+
+
+def test_the_pinned_gate_reads_every_plan_the_generator_writes_a_workflow_for(tmp_path, examined):
+    """The gate action installs onetrace-ci from the commit it is pinned to, so that commit's own
+    plan reader reads the plan: every plan shape the generator writes a workflow for must read
+    there, with the entries left ungated named and declared fields required."""
+    import io
+    import json
+    import os
+    import sys
+    import tarfile
+    from tests.instrument_fixtures import PLAN
+    from tests.test_ci_entries import INGEST, INGEST_UNGATED, ONE_COMMAND, TWO
+    from tests.test_instrument_decorators import TWO_ENTRIES
+    sha = GATE_ACTION.rpartition("@")[2]
+    archive = subprocess.run(["git", "-C", str(ROOT), "archive", sha, "src"], capture_output=True, timeout=60)
+    assert archive.returncode == 0, archive.stderr
+    tarfile.open(fileobj=io.BytesIO(archive.stdout)).extractall(tmp_path)
+    plans = {"one entry": PLAN, "two entries": TWO, "one command": ONE_COMMAND, "one ungated": INGEST_UNGATED,
+             "two entries, decorated": TWO_ENTRIES}
+    script = (
+        "import json, sys\n"
+        "import onetrace_ci\n"
+        "from onetrace_ci.plan import parse_plan_text\n"
+        "out = {'from': onetrace_ci.__file__}\n"
+        "for name, text in json.load(sys.stdin).items():\n"
+        "    try:\n"
+        "        p = parse_plan_text(text, source=name)\n"
+        "        out[name] = {'ungated': list(getattr(p, 'ungated', ['<no ungated field>'])),\n"
+        "                     'require_declared': p.require_declared, 'ignored': list(p.ignored_keys)}\n"
+        "    except Exception as e:\n"
+        "        out[name] = {'refused': str(e)[:300]}\n"
+        "print(json.dumps(out))\n")
+    read = subprocess.run([sys.executable, "-c", script], input=json.dumps(plans), capture_output=True, text=True,
+                          timeout=120, env=dict(os.environ, PYTHONPATH=str(tmp_path / "src")))
+    assert read.returncode == 0, read.stderr
+    got = json.loads(read.stdout)
+    examined(len(plans), f"plans read by the pinned gate {sha[:12]}")
+    assert got.pop("from").startswith(str(tmp_path)), "the pinned commit's reader was not the one imported"
+    for name, result in got.items():
+        assert "refused" not in result, f"the pinned gate {sha[:12]} refuses the {name} plan: {result['refused']}"
+        assert result["require_declared"] is True and result["ignored"] == [], (name, result)
+        assert result["ungated"] == ([INGEST] if name == "one ungated" else []), (name, result)
