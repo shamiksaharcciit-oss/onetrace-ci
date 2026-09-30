@@ -53,7 +53,8 @@ CODES: list[tuple[str, str, str]] = [
                       r"names a function; name the ingest stage|a plan with entries has no top-level|"
                       r"is also entries\[|not an entries field|is a stage of this entry|"
                       r"is not a stage of another entry|is named twice; each instance|"
-                      r"\.constants: '[^']*' cannot be resolved",
+                      r"\.constants: '[^']*' cannot be resolved|one baseline path for \d+ entries|"
+                      r"must be a path, or null|is the baseline of both",
      "Correct the named field: the message says which values it accepts."),
     ("class-method", r"names a class method",
      "Make the stage a module-level function (a method can call it), and name that function."),

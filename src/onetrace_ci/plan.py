@@ -51,6 +51,8 @@ class Plan:
     require_declared: bool = False
     #: Every field still holding a `DECIDE:` question, as (field path, question).
     open_questions: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+    #: The entries whose `ci.baseline` is null: run, and not gated. The gate's report names them.
+    ungated: tuple[str, ...] = field(default_factory=tuple)
 
 
 def find_open_questions(value, path: str = "") -> list[tuple[str, str]]:
@@ -125,7 +127,18 @@ def parse_plan_text(text: str, *, source: str) -> Plan:
         ignored_keys=tuple(sorted(k for k in values if k not in _KNOWN_KEYS)),
         require_declared=require_declared is True,
         open_questions=tuple(find_open_questions(values)),
+        ungated=_ungated(values),
     )
+
+
+def _ungated(values: dict) -> tuple[str, ...]:
+    """The entries a `ci.baseline` mapping leaves ungated (null), in the mapping's order.
+    `instrument` checks the mapping itself; the gate only names what it does not gate."""
+    ci = values.get("ci")
+    baseline = ci.get("baseline") if isinstance(ci, dict) else None
+    if not isinstance(baseline, dict):
+        return ()
+    return tuple(str(entry) for entry, path in baseline.items() if path is None)
 
 
 def load_plan(path: Path) -> Plan:

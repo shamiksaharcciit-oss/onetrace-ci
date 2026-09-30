@@ -127,9 +127,21 @@ class EntrySpec:
 
 @dataclass(frozen=True, slots=True)
 class CiSpec:
+    """How the workflow installs, runs and gates the pipeline. `run` is one command for every
+    entry, or None when `runs` gives each entry its own. `baseline` is one path (a plan with one
+    entry), or None when `baselines` gives each entry its own path, or None: not gated. With
+    one entry, a mapping reads as its one value."""
     install: str
-    run: str
-    baseline: str
+    run: str | None
+    baseline: str | None
+    runs: tuple[tuple[str, str], ...] = ()
+    baselines: tuple[tuple[str, str | None], ...] = ()
+
+    def run_of(self, entry: str) -> str | None:
+        return dict(self.runs).get(entry) if self.runs else self.run
+
+    def baseline_of(self, entry: str) -> str | None:
+        return dict(self.baselines).get(entry) if self.baselines else self.baseline
 
 
 @dataclass(frozen=True, slots=True)
@@ -477,12 +489,13 @@ def parse_instrument_plan(text: str, *, source: str) -> InstrumentPlan:
         for key in sorted(set(raw_ci) - _CI_KEYS):
             problems.add(f"ci.{key}", "not a ci field (the fields are install, run and baseline)")
         install = _text(raw_ci, "install", "ci.install", problems, required=True)
-        run = _text(raw_ci, "run", "ci.run", problems, required=True)
-        baseline = _text(raw_ci, "baseline", "ci.baseline", problems, required=True)
-        if baseline is not None:
-            _relative_path(baseline, "ci.baseline", problems)
-        if install and run and baseline:
-            ci = CiSpec(install, run, baseline)
+        #: Checked against the entries only when every entry was read: a mapping is not refused
+        #: for an entry the plan failed to read.
+        names = [str(spec.entry) for _, spec in entries] if len(entries) == _entry_count(values) else None
+        run, runs, run_ok = _per_entry(raw_ci, "run", names, problems)
+        baseline, baselines, baseline_ok = _per_entry(raw_ci, "baseline", names, problems)
+        if install and run_ok and baseline_ok:
+            ci = CiSpec(install, run, baseline, runs, baselines)
 
     sign = _block(values, "sign", problems)
     anchor = _block(values, "anchor", problems)
@@ -497,6 +510,72 @@ def parse_instrument_plan(text: str, *, source: str) -> InstrumentPlan:
     first = specs[0]
     return InstrumentPlan(source, approved_by, first.entry, first.run_dir, first.stages, boundaries, ci,
                           sign, anchor, trust, first.corpus, entries=specs)
+
+
+def _entry_count(values: dict) -> int:
+    raw = values.get("entries")
+    return len(raw) if "entries" in values and isinstance(raw, list) else 1
+
+
+def _per_entry(raw_ci: dict, key: str, names: list[str] | None, problems: _Problems):
+    """`ci.run` or `ci.baseline`: one value, or a mapping from each entry's `entry` to its value.
+    A baseline is a path in the repository, or null (the entry is not gated); one baseline path
+    serves one entry only, since each entry is gated against its own. Returns (one value,
+    per-entry pairs, whether it was read); a mapping for a plan with one entry reads as its one
+    value."""
+    at, value = f"ci.{key}", raw_ci.get(key)
+    baseline = key == "baseline"
+    if not isinstance(value, dict):
+        text = _text(raw_ci, key, at, problems, required=True)
+        if text is None:
+            return None, (), False
+        if baseline and names is not None and len(names) > 1:
+            problems.add(at, f"one baseline path for {len(names)} entries; each entry is gated against its "
+                             f"own baseline, so map each entry's `entry` to its baseline path, or to null to "
+                             f"leave it ungated")
+            return None, (), False
+        if baseline and not _relative_path(text, at, problems):
+            return None, (), False
+        return text, (), True
+    ok, pairs = True, []
+    for name, item in value.items():
+        field = f"{at}[{name!r}]"
+        if names is not None and name not in names:
+            problems.add(field, f"{name!r} is not one of the plan's entries ({names})")
+            ok = False
+        elif baseline and item is None:
+            pairs.append((name, None))
+        elif baseline and not isinstance(item, str):
+            problems.add(field, f"must be a path, or null to leave the entry ungated, got {item!r}")
+            ok = False
+        elif not isinstance(item, str) or not item.strip():
+            problems.add(field, f"must be text, got {item!r}")
+            ok = False
+        elif baseline and not _relative_path(item, field, problems):
+            ok = False
+        else:
+            pairs.append((name, item))
+    for name in names or ():
+        if name not in value:
+            problems.add(at, f"missing; entry {name!r} has no {key}: map every entry, to "
+                             + ("its baseline path, or to null to leave it ungated" if baseline else "its command"))
+            ok = False
+    #: As paths: `runs/b` and `runs/b/` are one folder, and one entry's baseline is never
+    #: another's.
+    owners: dict[PurePosixPath, str] = {}
+    for name, item in pairs if baseline else ():
+        if item is None:
+            continue
+        other = owners.setdefault(PurePosixPath(item), name)
+        if other != name:
+            problems.add(f"{at}[{name!r}]", f"{item!r} is the baseline of both {other!r} and {name!r}; each "
+                                            f"entry is gated against its own baseline")
+            ok = False
+    if not ok:
+        return None, (), False
+    if names is not None and len(names) == 1:
+        return pairs[0][1], (), True
+    return None, tuple(pairs), True
 
 
 def _entry(values: dict, prefix: str, problems: _Problems) -> EntrySpec | None:

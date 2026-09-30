@@ -46,3 +46,34 @@ def test_the_action_uploads_only_the_gate_report_and_for_a_stated_time(examined)
         paths = [p.strip() for p in str(step["with"]["path"]).splitlines() if p.strip()]
         assert paths == ["${{ inputs.out }}"], paths
         assert 1 <= int(step["with"]["retention-days"]) <= 14
+
+
+def test_each_gate_step_uploads_its_report_under_its_own_name(examined):
+    """Two gate steps in one job (one per entry) upload two reports; an artifact name is unique
+    in a workflow run, so each step names its own. The default keeps the one gate's name."""
+    action = yaml.safe_load(ACTION.read_text(encoding="utf-8"))
+    uploads = [s for s in action["runs"]["steps"] if "upload-artifact" in s.get("uses", "")]
+    examined(len(uploads), "upload steps in the composite action")
+    assert action["inputs"]["report-name"]["default"] == "onetrace-ci-gate-report"
+    assert uploads and all(s["with"]["name"] == "${{ inputs.report-name }}" for s in uploads)
+
+
+def test_the_pinned_gate_takes_every_input_the_generated_workflows_pass(examined):
+    """The generated workflow runs the gate action at the commit it pins, not the action in this
+    checkout: that commit must declare every input a generated workflow gives it."""
+    from onetrace_ci.instrument import render_entries_workflow, render_workflow
+    from onetrace_ci.instrument_plan import parse_instrument_plan
+    from tests.test_ci_entries import TWO
+    sha = GATE_ACTION.rpartition("@")[2]
+    shown = subprocess.run(["git", "-C", str(ROOT), "show", f"{sha}:action.yml"], capture_output=True,
+                           text=True, timeout=60)
+    assert shown.returncode == 0, shown.stderr
+    declared = set(yaml.safe_load(shown.stdout)["inputs"])
+    passed = set()
+    for text in (render_workflow(run_dir="runs/{run_id}", install="i", run="r", baseline="runs/b", plan_rel="p.yaml"),
+                 render_entries_workflow(parse_instrument_plan(TWO, source="<t>"), "p.yaml")):
+        for step in yaml.safe_load(text)["jobs"]["onetrace"]["steps"]:
+            if step.get("uses", "").startswith(GATE_ACTION.partition("@")[0] + "@"):
+                passed |= set(step.get("with", {}))
+    examined(len(passed), "inputs the generated workflows pass to the gate")
+    assert passed <= declared, f"the pinned gate {sha[:12]} does not declare {sorted(passed - declared)}"

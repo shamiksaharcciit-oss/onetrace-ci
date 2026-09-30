@@ -267,11 +267,21 @@ chunker, model…), because the SDK's `Instrument` requires one.
 
 A pipeline with a separate ingest has two run types. A plan names each under
 `entries:`, with its own `entry`, `run_dir`, `stages` and, for the query, a
-`corpus` link to the ingest's run:
+`corpus` link to the ingest's run. The entries run in the order the plan
+lists them, so list the ingest first:
 
 ```yaml
 approved_by: alice
 entries:
+  - entry: pipeline.ingest:run           # the ingest run
+    run_dir: runs/ingest-{run_id}
+    stages:
+      - name: index
+        function: pipeline.ingest:build_index
+        instrument: {name: word-index, package: onetrace-verify, kind: indexer}
+        files: [data/corpus.json]
+        trust: operator-authored
+        rederivable: "true"
   - entry: pipeline.main:run             # the query run
     run_dir: runs/query-{run_id}
     stages:
@@ -285,21 +295,33 @@ entries:
       from: runs/ingest-latest           # the ingest run the query reads
       stages: [retrieve]                 # where the link is recorded
       index_stage: index                 # the ingest stage whose output is the chunk index
-  - entry: pipeline.ingest:run           # the ingest run
-    run_dir: runs/ingest-{run_id}
-    stages:
-      - name: index
-        function: pipeline.ingest:build_index
-        instrument: {name: word-index, package: onetrace-verify, kind: indexer}
-        files: [data/corpus.json]
-        trust: operator-authored
-        rederivable: "true"
 approved_boundaries: []
 ci:
   install: pip install --require-hashes -r requirements.lock
-  run: python -m pipeline.demo
-  baseline: runs/baseline
+  run:                                   # or one command that runs every entry
+    "pipeline.ingest:run": python -m pipeline.ingest_demo
+    "pipeline.main:run": python -m pipeline.demo
+  baseline:                              # each entry's own baseline, or null: not gated
+    "pipeline.ingest:run": runs/ingest-baseline
+    "pipeline.main:run": runs/query-baseline
 ```
+
+An entry is written as a key in quotes, because it holds a colon.
+
+- **`ci.run`** is one command that runs every entry, or a mapping from each
+  entry to its command.
+- **`ci.baseline`** is one path when the plan has one entry. With several, it
+  maps each entry to its own baseline, or to `null` to leave that entry
+  ungated; the gate's report names every entry left ungated.
+
+The generated workflow runs the entries in the plan's order, then gates each
+entry that has a baseline against that baseline only, one step per entry; the
+job fails if any of them fails. **A query run is never compared with an
+ingest baseline.** Each entry's run gets its own id: with a command per entry,
+the base id `onetrace-ci-candidate` plus the entry's run type, which is the
+entry written in lower case with `-` for anything else
+(`onetrace-ci-candidate-pipeline-main-run`); with one command for every entry,
+the base id, and each entry's run is found in its own `run_dir`.
 
 The plan is refused, naming the field, when:
 
@@ -308,11 +330,14 @@ The plan is refused, naming the field, when:
   or no stage of another entry;
 - `corpus.from` is not a path to a run folder in the repository;
 - it has both `entries:` and a top-level `entry`, `run_dir`, `stages` or
-  `corpus`.
+  `corpus`;
+- `ci.baseline` is one path for several entries;
+- a `ci.run` or `ci.baseline` mapping leaves an entry out, or names one the
+  plan doesn't have.
 
 `approved_by`, `approved_boundaries`, `ci`, `sign`, `anchor` and `trust` stay
-at the top level and apply to every entry. `instrument` reads such a plan but
-does not generate it yet (see
+at the top level and apply to every entry. `instrument` generates such a plan
+in decorator style; a `corpus` link waits for the SDK (see
 [What waits for the next onetrace release](#what-waits-for-the-next-onetrace-release)).
 
 ### What the patch does

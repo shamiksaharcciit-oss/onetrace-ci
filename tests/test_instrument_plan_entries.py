@@ -32,7 +32,9 @@ approved_boundaries: []
 ci:
   install: pip install -e .
   run: python -m pipeline.demo
-  baseline: runs/baseline
+  baseline:
+    "pipeline.main:run": runs/query-baseline
+    "pipeline.ingest:run": runs/ingest-baseline
 '''
 
 

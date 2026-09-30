@@ -13,7 +13,9 @@ YAML parser does, with one documented difference: it never produces a number (be
 WHAT IT ACCEPTS
 ---------------
 - block mappings, nested by indentation (spaces only), with simple keys: a letter or `_`,
-  then letters, digits, spaces, `_`, `.` or `-` (never a number, a boolean or null);
+  then letters, digits, spaces, `_`, `.` or `-` (never a number, a boolean or null); or with
+  a quoted key, single or double, which is a string to every reader whatever it holds
+  (`"pipeline.main:run": runs/baseline`). Flow mappings take simple keys only;
 - block sequences, indented under their key or at the key's own indent, whose items are
   scalars, one-line flow collections, or mappings (`- name: x` and its continuation keys);
 - one-line flow sequences of scalars, `[a, "b c"]`, and one-line flow mappings of scalars,
@@ -194,6 +196,32 @@ def _quoted(text: str, source: str, no: int) -> str:
     return "".join(out)
 
 
+def _quoted_key(text: str, source: str, no: int) -> tuple[str, str]:
+    """(key, the rest of the line) for a block mapping line whose key is quoted,
+    `"pipeline.main:run": value`. A quoted key is a string to every reader, whatever it holds.
+    It is followed by `: ` or by `:` at the end of the line, as a simple key is."""
+    q, j = text[0], 1
+    while True:
+        if j >= len(text):
+            raise SubsetError(f"{source}: line {no}: unterminated quoted key: {text!r}")
+        if q == '"' and text[j] == "\\":
+            j += 2
+            continue
+        if text[j] == q:
+            if q == "'" and j + 1 < len(text) and text[j + 1] == "'":
+                j += 2
+                continue
+            break
+        j += 1
+    key, after = _quoted(text[:j + 1], source, no), text[j + 1:]
+    if not (after == ":" or after.startswith(": ")):
+        raise SubsetError(f"{source}: line {no}: a quoted key must be followed by ': ' or by ':' at "
+                          f"the end of the line: {text!r}")
+    if not key:
+        raise SubsetError(f"{source}: line {no}: an empty key names nothing")
+    return key, after[1:].strip()
+
+
 def _plain(text: str, source: str, no: int, *, flow: bool):
     first = text[0]
     if first in _REFUSED_LEADING:
@@ -337,12 +365,16 @@ class _Reader:
                 self.i += 1
                 text, no = line.text, line.no
             m = _KEY_RE.match(text)
-            if not m:
+            if m:
+                key, rest = _checked_key(m.group(1), self.source, no), text[m.end():].strip()
+            elif text[:1] in ("'", '"'):
+                key, rest = _quoted_key(text, self.source, no)
+            else:
                 if text.startswith("?"):
                     raise SubsetError(f"{self.source}: line {no}: a complex key ('?') is refused")
                 raise SubsetError(f"{self.source}: line {no}: not `key: value` with a simple key "
-                                  f"(a letter or _, then letters, digits, spaces, _ . -): {text!r}")
-            key, rest = _checked_key(m.group(1), self.source, no), text[m.end():].strip()
+                                  f"(a letter or _, then letters, digits, spaces, _ . -) or a quoted "
+                                  f"one: {text!r}")
             if key in result:
                 raise SubsetError(f"{self.source}: line {no}: duplicate key {key!r}")
             if rest:
