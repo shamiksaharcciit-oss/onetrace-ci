@@ -46,3 +46,13 @@ def test_the_action_uploads_only_the_gate_report_and_for_a_stated_time(examined)
         paths = [p.strip() for p in str(step["with"]["path"]).splitlines() if p.strip()]
         assert paths == ["${{ inputs.out }}"], paths
         assert 1 <= int(step["with"]["retention-days"]) <= 14
+
+
+def test_each_gate_step_uploads_its_report_under_its_own_name(examined):
+    """Two gate steps in one job (one per entry) upload two reports; an artifact name is unique
+    in a workflow run, so each step names its own. The default keeps the one gate's name."""
+    action = yaml.safe_load(ACTION.read_text(encoding="utf-8"))
+    uploads = [s for s in action["runs"]["steps"] if "upload-artifact" in s.get("uses", "")]
+    examined(len(uploads), "upload steps in the composite action")
+    assert action["inputs"]["report-name"]["default"] == "onetrace-ci-gate-report"
+    assert uploads and all(s["with"]["name"] == "${{ inputs.report-name }}" for s in uploads)
