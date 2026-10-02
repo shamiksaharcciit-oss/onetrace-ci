@@ -955,7 +955,8 @@ def _patch_httpx(mod):
                         _record("http", frame, **base, outcome=type(e).__name__)
                     raise
                 if base:
-                    _record("http", frame, **base, outcome=str(getattr(response, "status_code", "")))
+                    _record("http", frame, **base, outcome=str(getattr(response, "status_code", "")),
+                            response=_body(response))       # a read body only; a streamed one is the program's
                 return response
         else:
             async def send(self, request, *a, _real=real, **kw):
@@ -968,7 +969,8 @@ def _patch_httpx(mod):
                         _record("http", frame, **base, outcome=type(e).__name__)
                     raise
                 if base:
-                    _record("http", frame, **base, outcome=str(getattr(response, "status_code", "")))
+                    _record("http", frame, **base, outcome=str(getattr(response, "status_code", "")),
+                            response=_body(response))       # a read body only; a streamed one is the program's
                 return response
         send._onetrace_ci = True
         cls.send = send

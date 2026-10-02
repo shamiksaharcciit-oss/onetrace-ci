@@ -344,6 +344,78 @@ def test_a_streamed_request_body_is_not_read(tmp_path, examined):
     assert http and http[0]["request"] == "unrecorded:stream"
 
 
+HTTPX_BODIES_STUB = '''\
+"""A stand-in for httpx whose responses carry a body: read, as httpx reads it, unless the
+request asks for a stream, which the program reads itself."""
+__version__ = "0.0-stub"
+
+
+class URL:
+    def __init__(self, url):
+        self.host = url.split("/")[2]
+        self._url = url
+
+    def __str__(self):
+        return self._url
+
+
+class Request:
+    def __init__(self, method, url, content=b""):
+        self.method, self.url, self.content = method, URL(url), content
+
+
+class Response:
+    status_code = 200
+
+    def __init__(self, body=None):
+        if body is not None:
+            self._content = body                    # httpx keeps a read body here
+
+
+def _respond(stream):
+    return Response() if stream else Response(b'{"answer": "twelve months"}')
+
+
+class Client:
+    def send(self, request, stream=False, **kw):
+        return _respond(stream)
+
+
+class AsyncClient:
+    async def send(self, request, stream=False, **kw):
+        return _respond(stream)
+'''
+
+
+@pytest.mark.parametrize("call, expect_body", [
+    ('httpx.Client().send(httpx.Request("POST", "https://llm.example.test/v1", content=b"q"))', True),
+    ('asyncio.run(httpx.AsyncClient().send(httpx.Request("POST", "https://llm.example.test/v1", content=b"q")))', True),
+    ('httpx.Client().send(httpx.Request("POST", "https://llm.example.test/v1", content=b"q"), stream=True)', False),
+], ids=["a read body", "a read body, async", "a streamed body"])
+def test_an_httpx_response_body_is_fingerprinted_unless_it_is_streamed(tmp_path, examined, call, expect_body):
+    """As for requests: a body httpx has read is fingerprinted after the call returns; a streamed
+    one is the program's to read once, so it is recorded as unrecorded, never read here."""
+    llm = textwrap.dedent(f'''\
+        import asyncio
+        import httpx
+
+
+        def answer(request, passages, mode):
+            {call}
+            return {{"answer": passages[0]["text"]}}
+        ''')
+    r = observe_in(tmp_path, {"repo/pipeline/llm.py": llm, "stubs/httpx/__init__.py": HTTPX_BODIES_STUB})
+    examined(1, "the observed command")
+    assert r.returncode == 0, r.output[-500:]
+    http = [e for e in r.events if e["kind"] == "http"]
+    assert len(http) == 1, http
+    if expect_body:
+        assert "response" in http[0] and not http[0]["response"].startswith("unrecorded"), http[0]
+    else:
+        assert http[0].get("response") == "unrecorded:stream", http[0]
+    assert "twelve months" not in json.dumps(r.events)          # a fingerprint, never the body
+
+
 def test_tracing_lines_does_not_resolve_paths_line_by_line(tmp_path, examined):
     """The observer resolves a file's path once, not on every line it traces: before this, a
     tight loop ran a hundred times slower."""

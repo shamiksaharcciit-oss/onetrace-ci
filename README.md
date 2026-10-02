@@ -645,7 +645,8 @@ a draft someone may have started answering.
 
 It observes file reads and writes, environment reads, `subprocess.run`, HTTP
 calls through `requests` or `httpx` (naming `openai` or `anthropic` when
-their code made the call), exceptions, and the calls your entry function
+their code made the call, and fingerprinting the request and the response
+body the library has already read), exceptions, and the calls your entry function
 makes, directly or through a lambda, a comprehension or a decorator.
 
 It also takes in the frameworks your pipeline uses, once your code has
