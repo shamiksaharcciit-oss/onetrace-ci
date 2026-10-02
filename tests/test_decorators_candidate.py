@@ -108,7 +108,7 @@ def test_each_entry_s_run_is_where_its_gate_looks(tmp_path, one_command, examine
                                "i(); print(q())\"\n") + plan[plan.index("  baseline:\n"):]
     repo = _two_entries(tmp_path / "repo", plan)
     patch = tmp_path / "p.patch"
-    patch.write_bytes(build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo).patch.encode("utf-8"))
+    patch.write_bytes(build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo, style="decorators").patch.encode("utf-8"))
     subprocess.run(["git", "-C", str(repo), "apply", str(patch)], check=True, capture_output=True, timeout=60)
     steps = yaml.safe_load((repo / ".github" / "workflows" / "onetrace.yml").read_text(encoding="utf-8"))
     steps = steps["jobs"]["onetrace"]["steps"]
@@ -134,7 +134,7 @@ def test_the_workflow_s_run_is_where_its_gate_looks(tmp_path, examined):
     _candidate()
     repo = make_repo(tmp_path / "repo")
     patch = tmp_path / "p.patch"
-    patch.write_bytes(build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo).patch.encode("utf-8"))
+    patch.write_bytes(build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo, style="decorators").patch.encode("utf-8"))
     subprocess.run(["git", "-C", str(repo), "apply", str(patch)], check=True, capture_output=True, timeout=60)
     ran = subprocess.run([sys.executable, "-c", "from pipeline.main import run; print(run())"], cwd=repo,
                          capture_output=True, text=True, timeout=120,

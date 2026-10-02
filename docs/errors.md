@@ -33,6 +33,12 @@ The plan asks for several entries, a stage that repeats, or a stage's named inst
 
 **Fix:** Generate this plan as decorators (onetrace 0.2.0's `@ot.run` and `@ot.stage`), which carry several entries, repeats and instances; the wrapper style does not.
 
+## decorators-need-sdk
+
+`onetrace-ci instrument --style decorators` was asked for decorator output, which imports onetrace 0.2.0's `@ot.run` and `@ot.stage`. The onetrace `requirements.lock` pins is older, so that code would fail on import, and the command refuses rather than write it.
+
+**Fix:** Run `onetrace-ci instrument` without `--style` (wrappers are the default) until onetrace-ci pins onetrace 0.2.0; decorator output becomes the default then.
+
 ## needs-sdk
 
 The plan asks for code (signing, anchoring, settings, a corpus link) that this version of onetrace-ci does not generate yet.

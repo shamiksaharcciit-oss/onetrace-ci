@@ -176,7 +176,7 @@ def _instrument_refused(tmp_path, plan):
     repo.mkdir()
     (repo / "onetrace-plan.yaml").write_text(plan, encoding="utf-8")
     with pytest.raises(Refused) as caught:
-        build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo)
+        build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo, style="decorators")
     return "\n".join(caught.value.problems)
 
 

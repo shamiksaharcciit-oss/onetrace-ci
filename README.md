@@ -29,11 +29,11 @@ for them:
 - **Signing and anchoring.** A plan's `sign` or `anchor` block other than
   `none` is refused by `onetrace-ci instrument`. Runs are unsigned and
   unanchored.
-- **Decorators.** `onetrace-ci instrument`'s default style writes the
-  decorators of onetrace 0.2.0 (`@ot.run` and `@ot.stage`), which is not
-  released yet: the generated code imports an API that `onetrace` 0.1.x does
-  not have. With 0.1.x, use `--style wrappers` (see
-  [Instrument from a plan](#instrument-from-a-plan)).
+- **Decorators.** `wrappers` is the default style until onetrace-ci pins onetrace 0.2.0.
+  Decorator output imports onetrace 0.2.0's `@ot.run` and `@ot.stage`, which
+  the pinned onetrace does not have, so `--style decorators` refuses, with a
+  `fix:` line, and writes nothing. Once 0.2.0 is pinned, decorators become the
+  default (see [Instrument from a plan](#instrument-from-a-plan)).
 - **What decorator output does not generate yet.** An entry with parameters,
   calls of one stage that may overlap, a stage's named `instances`, the
   plan's `corpus`, and a stage run in another thread or process are refused,
@@ -200,14 +200,13 @@ didn't list.** The tool writes the boilerplate; you own the meaning.
 
 It writes one of two styles:
 
-- **`--style decorators`, the default:** onetrace 0.2.0's `@ot.run` on the
-  entry function and `@ot.stage` on each stage function (see
-  [Decorator style](#decorator-style)). **onetrace 0.2.0 is not released
-  yet**, so code in this style does not run with the `onetrace` that
-  `requirements.lock` pins.
 - **`--style wrappers`:** Recorder-API wrappers inside the entry function, for
   the released `onetrace` (see [What the patch does](#what-the-patch-does)).
-  The example above uses it, because it runs today.
+- **`--style decorators`:** onetrace 0.2.0's `@ot.run` on the entry function
+  and `@ot.stage` on each stage function (see
+  [Decorator style](#decorator-style)). It refuses until onetrace-ci pins
+  onetrace 0.2.0 (see
+  [What waits for the next onetrace release](#what-waits-for-the-next-onetrace-release)).
 
 Both styles write the same workflow file.
 
@@ -413,7 +412,7 @@ In wrapper style, anything it cannot handle safely, with the file and line
 
 ### Decorator style
 
-The default style writes onetrace 0.2.0's decorators onto your functions and
+Decorator style writes onetrace 0.2.0's decorators onto your functions and
 leaves the calls as you wrote them; the SDK records each call. For the plan
 above without its intake stage, and an entry without parameters:
 

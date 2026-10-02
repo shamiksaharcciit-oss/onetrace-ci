@@ -29,6 +29,9 @@ CODES: list[tuple[str, str, str]] = [
     ("decorator-style", r"generated in decorator style only",
      "Generate this plan as decorators (onetrace 0.2.0's `@ot.run` and `@ot.stage`), which carry "
      "several entries, repeats and instances; the wrapper style does not."),
+    ("decorators-need-sdk", r"decorator output needs onetrace 0\.2\.0",
+     "Run `onetrace-ci instrument` without `--style` (wrappers are the default) until onetrace-ci pins "
+     "onetrace 0.2.0; decorator output becomes the default then."),
     ("needs-sdk", r"onetrace 0\.2\.0",
      "Leave this out of the plan for now (or set it to `none`); it is generated once onetrace-ci "
      "is checked against the SDK version that provides it."),

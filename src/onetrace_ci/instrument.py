@@ -66,8 +66,12 @@ GATE_ACTION = "shamiksaharcciit-oss/onetrace-ci@fcd793fa7231683c1fb5b44de3dedf9b
 CHECKOUT_ACTION = "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"          # v4.4.0
 SETUP_PYTHON_ACTION = "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"  # v5.6.0
 WORKFLOW_PATH = ".github/workflows/onetrace.yml"
-#: The output styles: onetrace 0.2.0's decorators (the default), or Recorder-API wrappers.
+#: The output styles: Recorder-API wrappers (the default), or onetrace 0.2.0's decorators. Wrappers
+#: stay the default until onetrace-ci pins onetrace 0.2.0; until then the command refuses
+#: decorators, and the generator is reached only through build_patch(style="decorators").
 STYLES = ("decorators", "wrappers")
+DECORATORS_NEED_SDK = ("--style decorators: decorator output needs onetrace 0.2.0 (@ot.run and @ot.stage), "
+                       "and requirements.lock pins an older onetrace, so the code would fail on import")
 CANDIDATE_RUN_ID = "onetrace-ci-candidate"
 MARKER = "# onetrace-ci instrument: generated from the plan"
 _MARKER_RE = re.compile(re.escape(MARKER) + r" \(sha256:([0-9a-f]{16})\)")
@@ -1289,9 +1293,9 @@ def _utf8_source(raw: bytes, rel: str) -> str:
         raise Refused(f"{rel}:{line}: not valid UTF-8; onetrace-ci writes UTF-8 patches") from None
 
 
-def build_patch(*, plan_path: Path, repo: Path, style: str = "decorators") -> Result:
-    """The patch for `repo`, from the plan at `plan_path`, in `style` ("decorators", the default,
-    for onetrace 0.2.0; or "wrappers"), or `Refused`. Writes nothing."""
+def build_patch(*, plan_path: Path, repo: Path, style: str = "wrappers") -> Result:
+    """The patch for `repo`, from the plan at `plan_path`, in `style` ("wrappers", the default; or
+    "decorators", for onetrace 0.2.0), or `Refused`. Writes nothing."""
     if style not in STYLES:
         raise ValueError(f"style must be one of {STYLES}, got {style!r}")
     repo = repo.resolve()
@@ -1492,10 +1496,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan", required=True, type=Path)
     parser.add_argument("--repo", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
-    parser.add_argument("--style", choices=STYLES, default="decorators",
-                        help="decorators (the default: onetrace 0.2.0's @ot.run and @ot.stage), or "
-                             "wrappers (Recorder-API wrappers in the entry function)")
+    parser.add_argument("--style", choices=STYLES, default="wrappers",
+                        help="wrappers (the default: Recorder-API wrappers in the entry function), or "
+                             "decorators (onetrace 0.2.0's @ot.run and @ot.stage), which refuses until "
+                             "onetrace-ci pins onetrace 0.2.0")
     args = parser.parse_args(argv)
+    if args.style == "decorators":
+        # Decorator output can't run on the onetrace requirements.lock pins; generating it would
+        # hand the user code that fails on import. It becomes the default once 0.2.0 is pinned.
+        print(format_refusal("instrument", [DECORATORS_NEED_SDK]), file=sys.stderr)
+        return 1
     try:
         result = build_patch(plan_path=args.plan, repo=args.repo, style=args.style)
     except Refused as e:

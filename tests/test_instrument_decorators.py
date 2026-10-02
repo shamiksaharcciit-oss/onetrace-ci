@@ -8,6 +8,7 @@ run now, as expected failures that say why.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import os
 import subprocess
 import sys
@@ -196,14 +197,17 @@ def test_a_file_with_crlf_line_endings_keeps_them(tmp_path, examined):
     assert added and all(line.endswith("\r") for line in added), added
 
 
-def test_decorators_are_the_default_style(tmp_path, capsys, examined):
+def test_wrappers_are_the_default_style_until_onetrace_0_2_0_is_pinned(tmp_path, capsys, examined):
+    """Decorator output imports onetrace 0.2.0's @ot.run and @ot.stage, which the pinned onetrace
+    lacks; until onetrace-ci pins 0.2.0, the command and the function generate wrappers."""
     repo = make_repo(tmp_path / "repo")
     out = tmp_path / "p.patch"
     rc = main(["--plan", str(repo / "onetrace-plan.yaml"), "--repo", str(repo), "--out", str(out)])
     api = build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo)
     examined(2, "the patches from the command and the function, with no style named")
     assert rc == 0, capsys.readouterr().err
-    assert "@ot.run(" in out.read_text(encoding="utf-8") and "@ot.run(" in api.patch
+    for patch in (out.read_text(encoding="utf-8"), api.patch):
+        assert "Recorder(" in patch and "@ot.run(" not in patch
 
 
 def test_a_sign_block_is_refused_in_decorator_style_too(tmp_path, examined):
@@ -270,14 +274,28 @@ def test_both_styles_write_the_same_workflow(tmp_path, examined):
     assert _read(repo, ".github/workflows/onetrace.yml") == workflow_text(plan, "onetrace-plan.yaml")
 
 
-def test_the_style_flag_selects_decorators(tmp_path, capsys, examined):
+def test_style_decorators_refuses_until_onetrace_0_2_0_is_pinned(tmp_path, capsys, examined):
+    """`--style decorators` refuses, with a fix line, and writes no patch: the code it would
+    generate can't run on the onetrace requirements.lock pins. The generator itself stays tested
+    through build_patch(style="decorators") and stub_sdk."""
     repo = make_repo(tmp_path / "repo")
     out = tmp_path / "p.patch"
     rc = main(["--plan", str(repo / "onetrace-plan.yaml"), "--repo", str(repo), "--out", str(out),
                "--style", "decorators"])
-    examined(1, "the patch the command wrote")
-    assert rc == 0, capsys.readouterr().err
-    assert "@ot.run(" in out.read_text(encoding="utf-8")
+    err = capsys.readouterr().err
+    examined(1, "the refusal")
+    assert rc == 1
+    assert not out.exists()
+    assert "--style decorators" in err and "needs onetrace 0.2.0" in err
+    assert "    fix: " in err and "decorators-need-sdk" in err
+
+
+def test_the_readme_states_the_default_style_rule_in_one_place(examined):
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    rule = "`wrappers` is the default style until onetrace-ci pins onetrace 0.2.0"
+    examined(1, "README")
+    assert readme.count(rule) == 1
+    assert "`--style decorators` refuses" in readme
 
 
 def test_a_stage_that_repeats_may_be_called_in_a_loop(tmp_path, examined):
