@@ -79,9 +79,12 @@ def test_intake_runs_on_onetrace_s_own_read_memory_never_a_stand_in(examined):
     from onetrace.emit import StageContext
     examined(1, "installed onetrace")
     assert importlib.metadata.version("onetrace") == "0.1.2"
-    assert hasattr(StageContext, "read_memory")
-    assert not getattr(StageContext.read_memory, "_stand_in", False)
+    sdk_own = getattr(StageContext, "read_memory", None)
+    assert sdk_own is not None
+    # The end-to-end tests run after the fixture: what they call is what it leaves in place.
     assert real_read_memory() == "onetrace's own ctx.read_memory"
+    assert StageContext.read_memory is sdk_own
+    assert not getattr(StageContext.read_memory, "_stand_in", False)
 
 
 def test_the_applied_patch_runs_and_its_record_verifies(instrumented, run_pipeline, examined):
