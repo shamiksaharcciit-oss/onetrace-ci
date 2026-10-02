@@ -11,7 +11,7 @@ import pytest
 
 from onetrace_ci.instrument import WORKFLOW_PATH, build_patch
 from tests.instrument_fixtures import (MAIN, forget_pipeline_modules,
-                                       install_read_memory_if_missing, make_repo)
+                                       real_read_memory, make_repo)
 
 
 def _apply(repo, patch_text, tmp_path):
@@ -100,7 +100,7 @@ def importer():
 def test_a_module_not_running_from_its_repository_says_so(tmp_path, monkeypatch, importer, examined):
     """Installed somewhere without its plan (a non-editable install), the run would be written
     under site-packages; it stops instead, and says why."""
-    install_read_memory_if_missing()
+    real_read_memory()
     repo = make_repo(tmp_path / "repo")
     _apply(repo, build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo, style="wrappers").patch, tmp_path)
     elsewhere = tmp_path / "site-packages"
@@ -115,7 +115,7 @@ def test_a_module_not_running_from_its_repository_says_so(tmp_path, monkeypatch,
 
 def test_a_stage_value_json_cannot_hold_stops_the_run_naming_the_stage(tmp_path, monkeypatch, importer,
                                                                        examined):
-    install_read_memory_if_missing()
+    real_read_memory()
     repo = make_repo(tmp_path / "repo", {"pipeline/llm.py":
                                          "def answer(request, passages):\n    return {'tags': {'a', 'b'}}\n"})
     _apply(repo, build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo, style="wrappers").patch, tmp_path)

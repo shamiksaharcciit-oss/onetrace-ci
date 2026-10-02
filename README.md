@@ -42,7 +42,7 @@ for them:
   and the plan's `corpus`, are refused by `--style wrappers`. Decorator
   output generates `config` and `constants`.
 
-Everything else here works with `onetrace` 0.1.1, the version
+Everything else here works with `onetrace` 0.1.2, the version
 `requirements.lock` pins. `onetrace-ci discover` asks about signing,
 anchoring and trust in its drafts; answer `none` until the release exists.
 

@@ -15,7 +15,7 @@ import pytest
 from onetrace_ci.gate import _console_script, run_gate
 from onetrace_ci.instrument import Refused, build_patch, main
 from tests.instrument_fixtures import (PLAN, forget_pipeline_modules,
-                                       install_read_memory_if_missing, make_repo)
+                                       real_read_memory, make_repo)
 
 QUESTION = "what does the warranty cover"
 
@@ -60,8 +60,32 @@ def _receipts(run: Path) -> list[dict]:
     return [json.loads(p.read_text(encoding="utf-8")) for p in sorted((run / "receipts").glob("*.json"))]
 
 
+#: onetrace 0.1.2's published wheels, as PyPI lists them: `ctx.read_memory` ships in 0.1.2.
+PINNED = {"onetrace": ("0.1.2", "77c1e735f5c33a351b99c9e0d9926390277f3e14cfb400b5fb3e7fe4b69a55b4"),
+          "onetrace-verify": ("0.1.2", "e69188e6486de0e669b24005f355acf5823afeee2aa123c81bc8c1bef58930cc")}
+
+
+def test_the_lock_pins_onetrace_0_1_2_by_its_published_wheel_hashes(examined):
+    lock = (Path(__file__).resolve().parents[1] / "requirements.lock").read_text(encoding="utf-8")
+    examined(len(PINNED), "packages pinned")
+    for name, (version, sha) in PINNED.items():
+        entry = lock.split(f"\n{name}=={version} \\\n", 1)
+        assert len(entry) == 2, f"{name}=={version} is not pinned"
+        assert entry[1].splitlines()[0].strip() == f"--hash=sha256:{sha}", name
+
+
+def test_intake_runs_on_onetrace_s_own_read_memory_never_a_stand_in(examined):
+    import importlib.metadata
+    from onetrace.emit import StageContext
+    examined(1, "installed onetrace")
+    assert importlib.metadata.version("onetrace") == "0.1.2"
+    assert hasattr(StageContext, "read_memory")
+    assert not getattr(StageContext.read_memory, "_stand_in", False)
+    assert real_read_memory() == "onetrace's own ctx.read_memory"
+
+
 def test_the_applied_patch_runs_and_its_record_verifies(instrumented, run_pipeline, examined):
-    which = install_read_memory_if_missing()
+    which = real_read_memory()
     run_pipeline(instrumented, "t1")
     run = instrumented / "runs" / "t1"
     verify = subprocess.run([_console_script("onetrace-verify"), "--require-artifacts", str(run)],
@@ -95,7 +119,7 @@ def test_the_applied_patch_runs_and_its_record_verifies(instrumented, run_pipeli
 
 
 def test_no_memory_input_value_is_stored_only_its_digest(instrumented, run_pipeline, examined):
-    install_read_memory_if_missing()
+    real_read_memory()
     secret_question = "a question whose words must not be stored verbatim"
     run_pipeline(instrumented, "t2", secret_question)
     run = instrumented / "runs" / "t2"
@@ -107,7 +131,7 @@ def test_no_memory_input_value_is_stored_only_its_digest(instrumented, run_pipel
 
 def test_the_instrumented_run_returns_what_the_original_returned(tmp_path, instrumented, run_pipeline,
                                                                  examined):
-    install_read_memory_if_missing()
+    real_read_memory()
     original = make_repo(tmp_path / "original")
     before = run_pipeline(original, "unused")
     after = run_pipeline(instrumented, "t3")
@@ -141,7 +165,7 @@ def test_a_different_plan_on_instrumented_code_is_refused_not_silently_skipped(i
 
 def test_an_exception_in_a_stage_is_recorded_raised_and_the_run_still_closed(tmp_path, run_pipeline,
                                                                               examined):
-    install_read_memory_if_missing()
+    real_read_memory()
     repo = make_repo(tmp_path / "repo", {
         "pipeline/llm.py": "def answer(request, passages):\n    raise ValueError('the model is down')\n"})
     result = build_patch(plan_path=repo / "onetrace-plan.yaml", repo=repo, style="wrappers")
@@ -160,7 +184,7 @@ def test_an_exception_in_a_stage_is_recorded_raised_and_the_run_still_closed(tmp
 def test_the_gate_passes_an_instrumented_run_against_its_own_baseline(instrumented, run_pipeline,
                                                                       tmp_path, examined):
     """What the generated workflow runs: a committed baseline, a new run, the gate."""
-    install_read_memory_if_missing()
+    real_read_memory()
     run_pipeline(instrumented, "baseline")
     run_pipeline(instrumented, "onetrace-ci-candidate")
     exit_code, findings = run_gate(run=instrumented / "runs" / "onetrace-ci-candidate",
@@ -173,7 +197,7 @@ def test_the_gate_passes_an_instrumented_run_against_its_own_baseline(instrument
 
 def test_the_gate_reviews_a_changed_memory_input_at_the_intake_stage(instrumented, run_pipeline,
                                                                      tmp_path, examined):
-    install_read_memory_if_missing()
+    real_read_memory()
     run_pipeline(instrumented, "baseline")
     run_pipeline(instrumented, "onetrace-ci-candidate", "what does the shipping policy say")
     exit_code, findings = run_gate(run=instrumented / "runs" / "onetrace-ci-candidate",

@@ -3,10 +3,13 @@
 # formatting. LibCST's own YAML dependency is pinned with it, for CPython
 # 3.10-3.13 on Windows x86-64, Linux x86-64 and macOS arm64.
 # Install with: pip install --require-hashes -r requirements.lock
-onetrace==0.1.1 \
-    --hash=sha256:eccc509e80ac782dd89aa8e2f84d34aa21bc582cc84e306d362340b361e3d6cf
-onetrace-verify==0.1.1 \
-    --hash=sha256:cf259b4f281f2977836dbfbf0a312574f35d6e8eec9a93de997c96094fa1f624
+# onetrace 0.1.2 and onetrace-verify 0.1.2: the published wheels, as PyPI lists them.
+#   https://files.pythonhosted.org/packages/3f/26/46a79b497c23e3558bf8776d80b0bd220d694ccd45982a7397d073766ba0/onetrace-0.1.2-py3-none-any.whl
+#   https://files.pythonhosted.org/packages/43/20/f2c84baef28bb0fc2c0580f1f56c13ad6f758a6ad3e48608229dc066b829/onetrace_verify-0.1.2-py3-none-any.whl
+onetrace==0.1.2 \
+    --hash=sha256:77c1e735f5c33a351b99c9e0d9926390277f3e14cfb400b5fb3e7fe4b69a55b4
+onetrace-verify==0.1.2 \
+    --hash=sha256:e69188e6486de0e669b24005f355acf5823afeee2aa123c81bc8c1bef58930cc
 libcst==1.9.0 \
     --hash=sha256:5705f664266742b8d9323db714f58cf06a6cde739eb09fd9ca31cd233f9806e5 \
     --hash=sha256:cc84aee3c293a012db722aa2d6ea87be524646852684a5a4e54c1fb98ea9072f \

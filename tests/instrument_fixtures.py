@@ -105,23 +105,16 @@ def make_repo(root: Path, overrides: dict[str, str | None] | None = None) -> Pat
     return root
 
 
-def install_read_memory_if_missing() -> str:
-    """`ctx.read_memory` ships in onetrace 0.1.2. Against an older SDK, install a test-only
-    stand-in with the same contract (records a digest only; refuses `secret`), and say which
-    one is in use. Against 0.1.2 or later this does nothing, so the real call is exercised."""
-    from onetrace.canonical import digest
-    from onetrace.emit import Artifact, StageContext
+def real_read_memory() -> str:
+    """The instrumented code's intake goes through `ctx.read_memory`, which ships in onetrace 0.1.2,
+    the version requirements.lock pins. Only onetrace's own is ever used: an installed onetrace
+    without it fails here, loudly, rather than being stood in for."""
+    from onetrace.emit import StageContext
 
-    if hasattr(StageContext, "read_memory") and not getattr(StageContext.read_memory, "_stand_in", False):
-        return "onetrace's own ctx.read_memory"
-
-    def read_memory(self, data, media_type, name, trust_class):
-        self._refuse_if_secret(name, trust_class)
-        self._add_input(Artifact(name, digest(bytes(data)), str(len(data)), media_type, trust_class))
-
-    read_memory._stand_in = True
-    StageContext.read_memory = read_memory
-    return "a test stand-in for ctx.read_memory (the installed onetrace predates 0.1.2)"
+    if not hasattr(StageContext, "read_memory"):
+        raise AssertionError("the installed onetrace has no ctx.read_memory; install requirements.lock "
+                             "(onetrace 0.1.2)")
+    return "onetrace's own ctx.read_memory"
 
 
 def forget_pipeline_modules(prefix: str = "pipeline") -> None:

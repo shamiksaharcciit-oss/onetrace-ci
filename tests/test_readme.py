@@ -22,3 +22,12 @@ def test_the_readme_example_plan_is_a_complete_plan(examined):
     plan = parse_instrument_plan(example, source="README.md")
     examined(len(plan.stages), "stages in the README's example plan")
     assert [s.name for s in plan.stages] == ["intake", "retrieve", "answer"]
+
+
+def test_the_readme_names_the_onetrace_version_the_lock_pins(examined):
+    lock = (Path(__file__).resolve().parents[1] / "requirements.lock").read_text(encoding="utf-8")
+    pinned = re.search(r"^onetrace==([0-9.]+) ", lock, re.MULTILINE).group(1)
+    stated = re.search(r"Everything else here works with `onetrace` ([0-9.]+), the version", README)
+    examined(1, "version the README states")
+    assert stated is not None
+    assert stated.group(1) == pinned
