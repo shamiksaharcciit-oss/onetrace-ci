@@ -1735,3 +1735,49 @@ def test_an_ingest_that_also_ran_inside_the_query_says_those_runs_are_not_consid
     source = read_document(draft, source="draft")["corpus"]["from"]
     examined(1, "the corpus question")
     assert "1 of its 2 runs was inside a run of pipeline.main:run and is not considered here" in source, source
+
+
+def test_a_boolean_is_never_a_data_flow(tmp_path, monkeypatch, capsys, examined):
+    """True and False say nothing about where a value came from, as None doesn't: a stage that
+    returns one is never taken as the source of a later stage's argument."""
+    main_py = textwrap.dedent('''\
+        from pipeline.llm import answer
+        from pipeline.retrieval import retrieve
+
+
+        def check(request):
+            return bool(request)
+
+
+        def run(request):
+            ok = check(request)
+            passages = retrieve(request)
+            return answer(request, passages, ok)
+        ''')
+    llm = textwrap.dedent('''\
+        def answer(request, passages, ok):
+            return {"answer": passages[0]["text"], "checked": ok}
+        ''')
+    rc, draft, report, _, err = discover_in(tmp_path, monkeypatch, capsys,
+                                            {"repo/pipeline/main.py": main_py, "repo/pipeline/llm.py": llm})
+    answer = next(s for s in stages_of(draft) if s["name"] == "answer")
+    examined(1, "the answer stage")
+    assert rc == 0, err
+    assert any(s["name"] == "check" for s in stages_of(draft))
+    assert answer["inputs"] == ["intake", "retrieve"]
+
+
+def test_a_stage_that_reaches_outside_the_repository_is_proposed_as_a_boundary(tmp_path, monkeypatch, capsys,
+                                                                               examined):
+    """The fixture's answer stage calls a service; retrieve reads only the repository's own files.
+    The report proposes answer, and only answer, as a boundary, and the draft asks a person to
+    approve it."""
+    rc, draft, report, _, err = discover_in(tmp_path, monkeypatch, capsys)
+    proposed = section(report, "Proposed boundaries")
+    question = read_document(draft, source="draft")["approved_boundaries"]
+    examined(1, "the proposed boundaries")
+    assert rc == 0, err
+    lines = [line for line in proposed.splitlines() if line.startswith("- ")]
+    assert len(lines) == 1 and lines[0].startswith("- answer: ")
+    assert "llm.example.test" in lines[0] and lines[0].endswith("the record cannot see past it")
+    assert question.startswith("DECIDE:") and "answer: " in question and "llm.example.test" in question
