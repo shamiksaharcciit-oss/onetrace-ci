@@ -43,8 +43,9 @@ CODES: list[tuple[str, str, str]] = [
      "Create the named file in the repository, or correct the path in the plan."),
     ("missing-field", r"missing; |missing for stage|names nobody",
      "Write the named field in the plan; the tool never fills in meaning."),
-    ("invalid-value", r"is not one of|must be true or false|is a boolean, which the SDK|must be text|"
-                      r"must be a list|must be a mapping|must be a literal value|not a stage field|"
+    ("invalid-value", r"is not one of|must be true or false|must be a string|is a boolean, which the SDK|"
+                      r"must be text|must be a list|must be a mapping|must be a literal value|"
+                      r"not an? [a-z_]+ field \(|not a stage field|"
                       r"not an instrument field|not a ci field|not a corpus field|not a sign field|"
                       r"not an anchor field|not a trust field|is not a parameter name|"
                       r"is not `module\.path:function`|names an earlier stage too|"
@@ -138,7 +139,8 @@ def explain(problem: str) -> tuple[str, str] | None:
 
 
 def format_refusal(command: str, problems: list[str]) -> str:
-    """The refusal as printed: each problem, then its fix and the page that explains it."""
+    """The refusal as printed: each problem, then its fix and the page that explains it. A problem
+    no code covers (a defect `tests/test_errors.py` looks for) still gets a fix line, never none."""
     lines = [f"onetrace-ci {command}: refused:"]
     for problem in problems:
         lines.append(f"  {problem}")
@@ -147,4 +149,12 @@ def format_refusal(command: str, problems: list[str]) -> str:
             code, fix = found
             lines.append(f"    fix: {fix}")
             lines.append(f"    see: {ERRORS_PAGE}#{code}")
+        else:
+            lines.append(f"    fix: {GENERIC_FIX}")
+            lines.append(f"    see: {ERRORS_PAGE}")
     return "\n".join(lines)
+
+
+#: The fix printed for a refusal no code covers: what the message names, and where the codes are.
+GENERIC_FIX = (f"Correct what the message above names; {ERRORS_PAGE} lists every refusal and its fix, "
+               f"and a refusal missing from it is a defect to report.")
