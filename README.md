@@ -54,6 +54,50 @@ pip install --require-hashes -r requirements.lock
 pip install --no-deps .
 ```
 
+## Four ways in, by effort
+
+Pick the first that fits; each later one is for a larger codebase or a less
+known one.
+
+1. **Decorate by hand:** two decorators on your entry and stage functions,
+   run, verify. This waits for onetrace 0.2.0's `@ot.run` and `@ot.stage`
+   (see [What waits for the next onetrace release](#what-waits-for-the-next-onetrace-release));
+   until then, a pipeline records itself through the `onetrace` Recorder API
+   its own quickstart shows.
+2. **Add the gate:** `onetrace-ci init-ci`, a baseline, then the gate, with
+   no plan to write (see
+   [Add the gate without a plan](#add-the-gate-without-a-plan-onetrace-ci-init-ci)).
+3. **Generate from a plan:** `onetrace-ci instrument`, which writes the
+   recording code from a plan a person reviewed (see
+   [Instrument from a plan](#instrument-from-a-plan)).
+4. **Discover first:** `onetrace-ci discover`, when you don't know the stages
+   yet (see [Discover the stages first](#discover-the-stages-first)).
+
+What none of these claims:
+
+- Decorators and patches record only what is decorated.
+- `undeclared` means nobody stated it, and the gate can require it.
+
+## Add the gate without a plan: `onetrace-ci init-ci`
+
+For code that already records its runs, decorated or written by hand, with no
+plan. `onetrace-ci init-ci` writes two files and nothing else: the workflow,
+`.github/workflows/onetrace.yml`, and a minimal plan. It asks for nothing it
+can guess, and what it can't guess you give as flags:
+
+<!-- not executed -->
+```
+onetrace-ci init-ci --install "pip install --require-hashes -r requirements.lock" \
+    --run "python -m pipeline.demo" --run-dir "runs/{run_id}" --baseline runs/baseline
+```
+
+The plan it writes has `require_declared: false`, and `approved_by` as a
+`DECIDE:` question: a person answers it, and the gate refuses the plan until
+they do. Then propose a baseline with
+[`onetrace-ci baseline propose`](#onetrace-ci-baseline-propose), commit it, and
+the workflow runs [`onetrace-ci gate`](#onetrace-ci-gate) on every push. It
+never overwrites a file that is already there.
+
 ## A first gate run, walked through
 
 You need three things: a run to check, a baseline to check it against, and
