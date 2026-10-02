@@ -315,11 +315,30 @@ def run_gate(*, run: Path, baseline: Path, plan_path: Path, runner: Path | None,
     return exit_code, findings
 
 
+#: A query run's corpus link: the ingest run it read. onetrace names a changed link "corpus link"
+#: and never counts it as a setting, so neither does the summary line.
+LINK_KEY = "assertions.corpus_manifest"
+
+
+def _short(digest) -> str:
+    """A digest as onetrace's reports shorten it, its first 12 hex characters; `(none)` for none."""
+    return "(none)" if digest is None else str(digest).removeprefix("sha256:")[:12]
+
+
+def _link_change(differs: dict) -> str:
+    """A changed corpus link as `old -> new`, by short digests; empty when it didn't change."""
+    value = differs.get(LINK_KEY)
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return f"{_short(value[0])} -> {_short(value[1])}"
+    return ""
+
+
 def _setting_changes(differs: dict) -> str:
-    """The settings a diff annotation says changed, as `name old -> new`; digests left out."""
+    """The settings a diff annotation says changed, as `name old -> new`; digests and the corpus
+    link (not a setting) left out."""
     parts = []
     for field_name in sorted(differs):
-        if field_name.endswith("_digest"):
+        if field_name.endswith("_digest") or field_name == LINK_KEY:
             continue
         value = differs[field_name]
         name = field_name.removeprefix("assertions.constants.")
@@ -339,20 +358,25 @@ def summary_line(findings: list[Finding], out: Path) -> str:
         return f"fail: {fails[0].check}: {fails[0].detail}"
     report = out / "diff" / "diff.json"
     data = _read_json(report) if report.is_file() else {}
-    changes = {a.get("stage"): _setting_changes(a.get("differs") or {})
-               for a in data.get("annotations") or []}
+    annotated = {a.get("stage"): a.get("differs") or {} for a in data.get("annotations") or []}
+    changes = {stage: _setting_changes(d) for stage, d in annotated.items()}
+    links = {stage: _link_change(d) for stage, d in annotated.items()}
     diff = next((f for f in findings if f.check == "diff"), None)
     if diff is not None and diff.verdict == REVIEW:
         first = data.get("first_difference") or {}
         stage = first.get("stage") if isinstance(first, dict) else first
-        what = changes.get(stage)
+        what = "; ".join(p for p in (changes.get(stage), links.get(stage) and f"corpus link {links[stage]}") if p)
         return f'review: first difference at stage "{stage}"' + (f" ({what})" if what else "")
     reviews = [f for f in findings if f.verdict == REVIEW]
     if reviews:
         same = [s["stage"] for s in data.get("ladder") or [] if s.get("verdict") == "same"
-                and changes.get(s["stage"])]
+                and (changes.get(s["stage"]) or links.get(s["stage"]))]
         if same:
-            return f'review: instrument or config changed at stage "{same[0]}" ({changes[same[0]]})'
+            stage = same[0]
+            if not changes.get(stage):        # the corpus link alone: not an instrument or config change
+                return f'review: corpus link changed at stage "{stage}" (corpus link {links[stage]})'
+            line = f'review: instrument or config changed at stage "{stage}" ({changes[stage]})'
+            return line + (f"; corpus link changed ({links[stage]})" if links.get(stage) else "")
         return f"review: {reviews[0].check}: {reviews[0].detail}"
     count = sum(1 for s in data.get("ladder") or [] if s.get("verdict") == "same")
     line = f"pass: {count} stages same as baseline"
